@@ -16,3 +16,7 @@ Thumbs.db
 # dsp test artifacts
 dsp_test.log
 dsp_test.obj
+
+freq_resp.log
+build/freq_resp.exe
+build/freq_resp.obj

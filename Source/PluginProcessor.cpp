@@ -73,11 +73,18 @@ void TB303Processor::updateFilterCoefficients ()
     double reso = mSmoothedReso * 3.5;
     double q = 0.05 + 0.707 + reso * (1.0 - 0.707 - 0.08 * (cutoff / mSampleRate));
     q = std::max (q, 0.05);
-    double fc = cutoff / (mSampleRate * 2.0);
-    if (fc > 0.49) fc = 0.49;
-    mStage1.f = fc;
+
+    // Chamberlin SVF coefficient: f must be 2*sin(pi*fc) with fc = cutoff/fs
+    // (cycles per sample). The previous code used fc = cutoff/(2*fs) AND set
+    // f = fc (omitting the sin), which pitched the filter ~10x (3+ octaves) too
+    // low and left the upper knob range effectively dead.
+    double fc = cutoff / mSampleRate;
+    fc = std::clamp (fc, 0.0001, 0.49);
+    double f = 2.0 * std::sin (juce::MathConstants<double>::pi * fc);
+
+    mStage1.f = f;
     mStage1.q = q;
-    mStage2.f = fc * 0.95;
+    mStage2.f = f * 0.95;
     mStage2.q = q * 1.03;
 }
 
