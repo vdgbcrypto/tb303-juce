@@ -69,23 +69,29 @@ void TB303Processor::updateSmoothing (double sampleRate)
 
 void TB303Processor::updateFilterCoefficients ()
 {
-    double cutoff = 20.0 * std::pow (10.0, mSmoothedCutoff * 4.0);
-    double reso = mSmoothedReso * 3.5;
-    double q = 0.05 + 0.707 + reso * (1.0 - 0.707 - 0.08 * (cutoff / mSampleRate));
-    q = std::max (q, 0.05);
-
-    // Chamberlin SVF coefficient: f must be 2*sin(pi*fc) with fc = cutoff/fs
-    // (cycles per sample). The previous code used fc = cutoff/(2*fs) AND set
-    // f = fc (omitting the sin), which pitched the filter ~10x (3+ octaves) too
-    // low and left the upper knob range effectively dead.
-    double fc = cutoff / mSampleRate;
-    fc = std::clamp (fc, 0.0001, 0.49);
+    // Chamberlin SVF coefficient: f = 2*sin(pi*fc), fc = cutoff/sr (cycles/sample).
+    // mCutoffHz already folds in the ENV MOD sweep + ACCENT filter-open (set per
+    // sample in processBlock); mDamping encodes RESONANCE (LOW damping = MORE
+    // resonance/self-osc, so the resonance knob is INVERTED vs the old code which
+    // raised q with the knob and made resonance weaker as you turned it up).
+    double fc = juce::jlimit (0.0001, 0.49, mCutoffHz / mSampleRate);
     double f = 2.0 * std::sin (juce::MathConstants<double>::pi * fc);
 
+    // Both stages share the same damping so the cascade can self-oscillate at
+    // high resonance (303 resonance = negative feedback that whistles near max).
     mStage1.f = f;
-    mStage1.q = q;
+    mStage1.q = mDamping;
     mStage2.f = f * 0.95;
-    mStage2.q = q * 1.03;
+    mStage2.q = mDamping;
+}
+
+double TB303Processor::cutoffFromKnob (double t)
+{
+    // TB-303 VCF: 24 dB/oct 4-pole ladder. Range ~18 Hz .. ~18 kHz with an
+    // extremely low-end-weighted (non-linear) taper: most of the knob travel
+    // sits in the low end, the top barely moves. pow(t,1.3) biases low end.
+    const double minHz = 18.0;
+    return minHz * std::pow (10.0, std::pow (t, 1.3) * 3.0); // ~18 Hz .. ~18 kHz
 }
 
 double TB303Processor::processFilterStage (double x, int stage)
@@ -94,8 +100,8 @@ double TB303Processor::processFilterStage (double x, int stage)
     s.lp += s.f * s.bp;
     s.hp = x - s.lp - s.q * s.bp;
     s.bp += s.f * s.hp;
-    s.lp = std::clamp (s.lp, -1.5, 1.5);
-    s.bp = std::clamp (s.bp, -1.5, 1.5);
+    s.lp = std::clamp (s.lp, -6.0, 6.0);   // linear clamp (bounded; tanh would kill self-osc)
+    s.bp = std::clamp (s.bp, -6.0, 6.0);
     return s.lp;
 }
 
@@ -103,13 +109,17 @@ double TB303Processor::envelopeStep (int gate)
 {
     if (gate)
     {
-        // Fast attack to peak on note-on
-        mEnvLevel = 1.0 + mSmoothedAccent * 0.4;
+        // 303 AD envelope: fixed ~2.5 ms attack ramps to peak (no instant jump,
+        // which would click the cutoff open). Accent raises the VCA peak.
+        double target = 1.0 + mSmoothedAccent * 0.4;
+        double a = 1.0 - std::exp (-1.0 / (0.0025 * mSampleRate));
+        mEnvLevel += (target - mEnvLevel) * a;
+        mEnvPeak = target;
     }
     else
     {
-        // Exponential decay driven by Decay
-        double decayTime = 0.05 + (1.0 - 0.05) * mSmoothedDecay;
+        // Exponential decay (no sustain).
+        double decayTime = 0.05 + (1.0 - 0.05) * mSmoothedDecay; // ~50 ms .. ~1.0 s
         double coeff = std::exp (-1.0 / (decayTime * mSampleRate));
         mEnvLevel *= coeff;
         if (mEnvLevel < 1e-6) mEnvLevel = 0.0;
@@ -189,7 +199,23 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
         mSmoothedBypass  += ((bypassVal > 0.5f ? 1.0 : 0.0) - mSmoothedBypass) * mBypassSmoothCoef;
         mBypass = mSmoothedBypass > 0.5f;
 
-        // Recompute filter coefficients every sample so cutoff tracks the knob.
+        // --- Effective VCF cutoff (TB-303 behaviour) ---
+        double baseCutoff = cutoffFromKnob (mSmoothedCutoff);
+
+        // ENV MOD sweeps the cutoff using the ABSOLUTE envelope (0..~1.4), so an
+        // accented note (higher envPeak) sweeps DEEPER — authentic 303 squelch.
+        // Accent also deepens the sweep depth, and adds a modest static "punch"
+        // open. Clamped to Nyquist so the sweep stays audible instead of pegging.
+        double envDepth = mSmoothedEnvMod * (1.0 + 0.5 * mSmoothedAccent);
+        double cutoffHz = baseCutoff * (1.0 + envDepth * mEnvLevel * 4.0);
+        cutoffHz *= (1.0 + mSmoothedAccent * 0.3);
+        mCutoffHz = juce::jlimit (18.0, 0.49 * mSampleRate, cutoffHz);
+
+        // RESONANCE: LOW damping = MORE resonance. The Chamberlin SVF only
+        // self-oscillates at damping ~0 (verified by selfosc_test), so map
+        // reso=1 -> 0.0 (303 "whistle") and reso=0 -> 0.5 (clean/flat-ish).
+        mDamping = 0.5 * (1.0 - mSmoothedReso);
+
         updateFilterCoefficients();
 
         while (hasEvent && midiPos == sample)
@@ -216,8 +242,8 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
 
         const int noteGate = mNoteOn ? 1 : 0;
 
-        // Simple oscillator
-        double freq = noteFrequency * std::pow (2.0, mSmoothedTune - 0.5);
+        // Simple oscillator — TUNE is +/- 1 octave about the played note.
+        double freq = noteFrequency * std::pow (2.0, (mSmoothedTune - 0.5) * 2.0);
         mPhase += (freq * 2.0 * juce::MathConstants<double>::pi) / mSampleRate;
         if (mPhase > 2.0 * juce::MathConstants<double>::pi) mPhase -= 2.0 * juce::MathConstants<double>::pi;
 
@@ -231,7 +257,9 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
 
         // Envelope + drive + output
         double env = envelopeStep (noteGate);
-        double accented = env + mSmoothedAccent * 0.3;
+        // Accent boosts amplitude on accented notes (in addition to opening the
+        // filter, handled in the cutoff calc above).
+        double accented = env * (1.0 + mSmoothedAccent * 0.3);
         double driven = driveSignal (filtered * accented * 1.2, mSmoothedAccent * 0.5);
         double out = driven * mSmoothedVolume * 0.8;
 

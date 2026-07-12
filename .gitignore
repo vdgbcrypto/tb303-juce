@@ -20,3 +20,10 @@ dsp_test.obj
 freq_resp.log
 build/freq_resp.exe
 build/freq_resp.obj
+
+build/reso_test.exe
+build/reso_test.obj
+build/selfosc_test.exe
+build/selfosc_test.obj
+reso_test.log
+selfosc_test.log

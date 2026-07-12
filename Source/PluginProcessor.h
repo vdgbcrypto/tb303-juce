@@ -39,6 +39,7 @@ private:
     double driveSignal (double x, double drive) const;
     double processFilterStage (double x, int stage);
     void updateFilterCoefficients ();
+    double cutoffFromKnob (double t);
     void reset ();
     void updateSmoothing (double sampleRate);
     
@@ -69,6 +70,9 @@ private:
     double mParamSmoothCoef {0.0};
     double mBypassSmoothCoef {0.0};
     double mSmoothedBypass {0.0};
+    double mCutoffHz {1000.0};   // effective VCF cutoff (folds in env-mod + accent)
+    double mDamping {0.707};     // SVF damping (LOW = more resonance / self-osc)
+    double mEnvPeak {1.0};       // envelope peak this note (for env-mod normalisation)
     float noteFrequency {0.0f};
     float activeLevel {0.0f};
 
