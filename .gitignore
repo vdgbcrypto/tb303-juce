@@ -12,3 +12,7 @@ Source/graphify-out/
 Thumbs.db
 .vs/
 *.slnx.user
+
+# dsp test artifacts
+dsp_test.log
+dsp_test.obj

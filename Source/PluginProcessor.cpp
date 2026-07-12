@@ -60,7 +60,10 @@ void TB303Processor::reset()
 
 void TB303Processor::updateSmoothing (double sampleRate)
 {
-    mParamSmoothCoef = 1.0 - std::exp (-1.0 / (0.03 * sampleRate));
+    // 10 ms time constant, applied PER SAMPLE (see processBlock). Previously the
+    // coefficient was applied once per block, which stretched the effective time
+    // constant to several seconds and made every knob feel laggy/unresponsive.
+    mParamSmoothCoef = 1.0 - std::exp (-1.0 / (0.01 * sampleRate));
     mBypassSmoothCoef = 1.0 - std::exp (-1.0 / (0.01 * sampleRate));
 }
 
@@ -125,7 +128,8 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
     for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
         buffer.clear (i, 0, buffer.getNumSamples());
 
-    // Get parameters atomically before processing
+    // Get parameters atomically before processing (pointers are stable; values
+    // are read + smoothed PER SAMPLE inside the loop below).
     auto cutoffParam = apvts.getRawParameterValue ("cutoff");
     auto resoParam = apvts.getRawParameterValue ("resonance");
     auto envModParam = apvts.getRawParameterValue ("envmod");
@@ -135,28 +139,6 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
     auto tuneParam = apvts.getRawParameterValue ("tune");
     auto bypassParam = apvts.getRawParameterValue ("bypass");
 
-    float cutoffVal = cutoffParam->load();
-    float resoVal = resoParam->load();
-    float envModVal = envModParam->load();
-    float decayVal = decayParam->load();
-    float accentVal = accentParam->load();
-    float volumeVal = volumeParam->load();
-    float tuneVal = tuneParam->load();
-    float bypassVal = bypassParam->load();
-
-    // Smooth parameters
-    mSmoothedCutoff += (cutoffVal - mSmoothedCutoff) * mParamSmoothCoef;
-    mSmoothedReso += (resoVal - mSmoothedReso) * mParamSmoothCoef;
-    mSmoothedEnvMod += (envModVal - mSmoothedEnvMod) * mParamSmoothCoef;
-    mSmoothedDecay += (decayVal - mSmoothedDecay) * mParamSmoothCoef;
-    mSmoothedAccent += (accentVal - mSmoothedAccent) * mParamSmoothCoef;
-    mSmoothedVolume += (volumeVal - mSmoothedVolume) * mParamSmoothCoef;
-    mSmoothedTune += (tuneVal - mSmoothedTune) * mParamSmoothCoef;
-    mSmoothedBypass += ((bypassVal > 0.5f ? 1.0 : 0.0) - mSmoothedBypass) * mBypassSmoothCoef;
-    mBypass = mSmoothedBypass > 0.5f;
-
-    updateFilterCoefficients();
-
     if (mBypass)
     {
         // Buffer was already cleared above; bypass silences output for this instrument.
@@ -165,8 +147,6 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
 
     auto* left = buffer.getWritePointer (0);
     auto* right = buffer.getWritePointer (1);
-    const double freqMul = std::pow (2.0, mSmoothedTune - 0.5); // hoisted out of the sample loop
-    const float currentVolume = mSmoothedVolume;
 
     const int numSamples = buffer.getNumSamples();
 
@@ -181,6 +161,30 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
     int sample = 0;
     while (sample < numSamples)
     {
+        // Read + smooth parameters PER SAMPLE so the 10 ms time constant is real
+        // (applying it once per block inflated it to seconds and made knobs laggy).
+        float cutoffVal = cutoffParam->load();
+        float resoVal = resoParam->load();
+        float envModVal = envModParam->load();
+        float decayVal = decayParam->load();
+        float accentVal = accentParam->load();
+        float volumeVal = volumeParam->load();
+        float tuneVal = tuneParam->load();
+        float bypassVal = bypassParam->load();
+
+        mSmoothedCutoff  += (cutoffVal  - mSmoothedCutoff)  * mParamSmoothCoef;
+        mSmoothedReso    += (resoVal    - mSmoothedReso)    * mParamSmoothCoef;
+        mSmoothedEnvMod  += (envModVal  - mSmoothedEnvMod)  * mParamSmoothCoef;
+        mSmoothedDecay   += (decayVal   - mSmoothedDecay)   * mParamSmoothCoef;
+        mSmoothedAccent  += (accentVal  - mSmoothedAccent)  * mParamSmoothCoef;
+        mSmoothedVolume  += (volumeVal  - mSmoothedVolume)  * mParamSmoothCoef;
+        mSmoothedTune    += (tuneVal    - mSmoothedTune)    * mParamSmoothCoef;
+        mSmoothedBypass  += ((bypassVal > 0.5f ? 1.0 : 0.0) - mSmoothedBypass) * mBypassSmoothCoef;
+        mBypass = mSmoothedBypass > 0.5f;
+
+        // Recompute filter coefficients every sample so cutoff tracks the knob.
+        updateFilterCoefficients();
+
         while (hasEvent && midiPos == sample)
         {
             if (midiMsg.isNoteOn())
@@ -206,7 +210,7 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
         const int noteGate = mNoteOn ? 1 : 0;
 
         // Simple oscillator
-        double freq = noteFrequency * freqMul;
+        double freq = noteFrequency * std::pow (2.0, mSmoothedTune - 0.5);
         mPhase += (freq * 2.0 * juce::MathConstants<double>::pi) / mSampleRate;
         if (mPhase > 2.0 * juce::MathConstants<double>::pi) mPhase -= 2.0 * juce::MathConstants<double>::pi;
 
@@ -222,7 +226,7 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
         double env = envelopeStep (noteGate);
         double accented = env + mSmoothedAccent * 0.3;
         double driven = driveSignal (filtered * accented * 1.2, mSmoothedAccent * 0.5);
-        double out = driven * currentVolume * 0.8;
+        double out = driven * mSmoothedVolume * 0.8;
 
         left[sample] = (float) out;
         right[sample] = (float) out;
