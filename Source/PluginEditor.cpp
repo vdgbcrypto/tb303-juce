@@ -241,16 +241,17 @@ void TB303Editor::resized()
     distortionSlider.setBounds (bounds.getX() + comboW + 16, rowY - 6, 56, 56);
     distortionLabel.setBounds (bounds.getX() + comboW + 16, rowY + 52, 56, labelH);
 
-    // Preset dropdown row (full width): built-in 303 patterns.
-    const int presetY = rowY + comboH + 8;
+    // Sequencer row: Run toggle + Tempo knob (directly under waveform/DRIVE).
+    const int seqY = rowY + comboH + 8;
+    const int seqX = bounds.getX() + comboW + 16;
+    seqRunButton.setBounds (seqX, seqY, 70, comboH);
+    seqTempoSlider.setBounds (seqX + 80, seqY - 6, 56, 56);
+
+    // Preset dropdown: UNDER the sequencer section (full width).
+    const int presetY = seqY + comboH + 8;
     presetCombo.setBounds (bounds.getX(), presetY, bounds.getWidth(), comboH);
 
-    // Sequencer row: Run toggle + Tempo knob, to the right of the waveform combo.
-    const int seqX = bounds.getX() + comboW + 16;
-    seqRunButton.setBounds (seqX, presetY, 70, comboH);
-    seqTempoSlider.setBounds (seqX + 80, presetY - 6, 56, 56);
-
-    // A/B + Random + Clear, below the preset row.
+    // A/B + Random + Clear, below the preset dropdown.
     const int gridY = presetY + comboH + 10;
     abButton.setBounds (bounds.getX(), gridY, 70, comboH);
     randomButton.setBounds (bounds.getX() + 80, gridY, 70, comboH);
