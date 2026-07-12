@@ -150,6 +150,26 @@ Prevention: after apvts.replaceState(...) in setStateInformation, call
 loadPreset((int)apvts.getParameter("preset")->getValue()) so the restored
 index is re-applied to the grid + audio thread (SPSC, L9/L10).
 
+### L14 — Host MIDI-clock slave: 24ppq => 6 ticks/step, slave must NOT also run the timer
+Error: when slaving to host clock, if the internal timer path ALSO runs you
+get double-triggered steps (internal tempo + clock both advance mSeqStepIndex).
+Two real cases: (a) a GAP block with no 0xF8 this block but mClockRunning==true
+falls into the internal-timer branch -> desync; (b) a STOP block (0xFC) sets
+mClockRunning=false but hostClockSeen=true -> gate false -> internal timer
+restarts notes at internal tempo on host stop (glitch). Also 24ppq means 6
+ticks per 16th, NOT 4. And clockStart must RELEASE the note the internal timer
+is holding (noteOff(mSeqCurrentNote)) before resetting, or a host Start strands
+a stuck note.
+Prevention: gate the two paths on mClockRunning (not hostClockSeen) and a sticky
+mHostSlaved flag: `if (mClockRunning){ slave } else if (!mHostSlaved){ internal }`.
+Gap blocks simply wait (no internal advance). clockStop sends allNotesOff and
+stays silent (hostSlaved still true until seqRun off/on clears it). clockStart
+emits noteOff(mSeqCurrentNote) first, then resets. Count `++mClockTickInStep;
+if (>=6){ reset; emitStep(...); ++mSeqStepIndex; }`. Use a pre-sized member
+buffer mClockTicks[64] (NOT a local std::vector) so the clock path allocates
+nothing on the audio thread. emitStep() is the single shared note-trigger so
+both paths stay consistent (L11 slide/release behaviour).
+
 ---
 ---
 

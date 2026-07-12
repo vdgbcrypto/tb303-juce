@@ -75,6 +75,19 @@ public:
     int  mSeqCurrentStepPlaying {-1};
     int  mSeqCurrentNote {-1};    // note actually sent at note-on (for release)
 
+    // Host MIDI-clock slave state (Phase 3): 24 ppq -> 6 ticks per 16th note.
+    bool mClockRunning {false};
+    int  mClockTickInStep {0};    // ticks received within the current 16th
+    bool mHostSlaved {false};     // sticky: host clock engaged this run (so a
+                                  // Stop doesn't revert to the internal timer)
+    int  mClockTicks[64];         // sample positions of 0xF8 in the current block
+    int  mClockTickCount {0};     // number of valid entries in mClockTicks
+
+    // Emit the note-on/off for the current step at sample position `atSample`.
+    // Handles slide->rest release + mSeqCurrentNote snapshot (L11). Shared by
+    // the internal timer and the host-MIDI-clock slave path.
+    void emitStep (int stepGlobal, int atSample, const Pattern& pat, juce::MidiBuffer& out);
+
     // UI calls these to edit + publish the pattern (grid editor, Phase 2).
     int  getActiveAB() const { return mActiveAB; }
     void setActiveAB (int ab) { mActiveAB = (ab == 0) ? 0 : 1; }
@@ -129,6 +142,7 @@ private:
     double mSmoothedVolume {0.5};
     double mSmoothedTune {0.5};
     double mSmoothedDist {0.0}; // smoothed distortion amount (0..1)
+    double mSmoothedSwing {0.0}; // smoothed swing amount (0..0.6)
     double mEnvLevel {0.0};
     bool mNoteOn {false};
     SVF mStage1;

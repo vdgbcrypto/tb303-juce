@@ -61,6 +61,18 @@ TB303Editor::TB303Editor (TB303Processor& p)
     distortionLabel.setFont (juce::Font (12.0f, juce::Font::bold));
     addAndMakeVisible (distortionLabel);
 
+    // Swing knob (Phase 3): 0 = straight, up to 0.6 (~triplet feel).
+    swingSlider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
+    swingSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 46, 16);
+    swingSlider.setRange (0.0, 0.6, 0.01);
+    swingSlider.setColour (juce::Slider::rotarySliderFillColourId, green);
+    addAndMakeVisible (swingSlider);
+    swingLabel.setText ("SWING", juce::dontSendNotification);
+    swingLabel.setJustificationType (juce::Justification::centred);
+    swingLabel.setColour (juce::Label::textColourId, green);
+    swingLabel.setFont (juce::Font (12.0f, juce::Font::bold));
+    addAndMakeVisible (swingLabel);
+
     // Sequencer (Phase 1): Run toggle + Tempo knob.
     addAndMakeVisible (seqRunButton);
     seqRunButton.setButtonText ("SEQ Run");
@@ -171,6 +183,8 @@ TB303Editor::TB303Editor (TB303Processor& p)
         processor.apvts, "preset", presetCombo);
     distortionAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
         processor.apvts, "distortion", distortionSlider);
+    swingAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
+        processor.apvts, "swing", swingSlider);
 }
 
 TB303Editor::~TB303Editor() {}
@@ -240,6 +254,8 @@ void TB303Editor::resized()
     waveformLabel.setBounds (bounds.getX(), rowY + comboH, comboW, labelH);
     distortionSlider.setBounds (bounds.getX() + comboW + 16, rowY - 6, 56, 56);
     distortionLabel.setBounds (bounds.getX() + comboW + 16, rowY + 52, 56, labelH);
+    swingSlider.setBounds (bounds.getX() + comboW + 80, rowY - 6, 56, 56);
+    swingLabel.setBounds (bounds.getX() + comboW + 80, rowY + 52, 56, labelH);
 
     // Sequencer row: Run toggle + Tempo knob (directly under waveform/DRIVE).
     const int seqY = rowY + comboH + 8;

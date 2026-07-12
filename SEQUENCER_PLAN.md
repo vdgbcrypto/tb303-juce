@@ -46,7 +46,9 @@ the next begins.
 - Phase 1: RUN/STOP toggle + TEMPO knob + a default acid pattern so it's audible. ✅
 - Phase 2: 16-step grid editor (note slider + on/slide/accent toggles per step),
   A/B select, clear/randomize. ✅
-- Phase 3 (optional): swing, pattern chain A→B, MIDI clock sync.
+- Phase 3: **SWING** knob (internal clock, even/odd 16th duration) + **host
+  MIDI-clock sync** (slave to 0xF8, 24ppq => 6 ticks/step, start/stop). ✅
+  + 60 built-in patterns dropdown, DRIVE distortion, bypass removed.
 
 ## Phases
 1. **Data model + clock + note emission + Run/Tempo + default pattern.** ✅ DONE
@@ -55,7 +57,9 @@ the next begins.
 2. **16-step grid editor UI** (note/slide/accent/on), A/B, lock-free commit. ✅ DONE
    (real MSVC build + DSP Reviewer — fixed SPSC double-buffer data race, live-edit
    stuck-note via mSeqCurrentNote snapshot).
-3. **Polish:** swing, pattern chaining, host MIDI-clock sync, preset save/load.
+3. **Swing + host MIDI-clock sync** + 60-pattern preset bank + DRIVE + bypass removed. ✅ DONE
+   (real MSVC build PASSED; DSP Reviewer audit dispatched; numerical swing/clock
+   tests PASS: swing pair = 2x base, 6 ticks/step).
 
 ## Verification
 - Numerical tests (dsp_test/): step spacing error = 0.00 samples (sample-accurate

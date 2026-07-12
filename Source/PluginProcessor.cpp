@@ -21,6 +21,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout TB303Processor::createParame
         juce::ParameterID {"tune", 1}, "Tune", 0.0f, 1.0f, 0.5f));
     params.push_back(std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID {"distortion", 1}, "Distortion", 0.0f, 1.0f, 0.0f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID {"swing", 1}, "Swing", 0.0f, 0.6f, 0.0f));
     juce::StringArray waveChoices;
     waveChoices.add ("Saw");
     waveChoices.add ("Square");
@@ -230,6 +232,35 @@ juce::StringArray TB303Processor::presetChoices() const
     return items;
 }
 
+void TB303Processor::emitStep (int stepGlobal, int atSample, const Pattern& pat, juce::MidiBuffer& out)
+{
+    int step = stepGlobal % pat.length;
+    const Step& s = pat.steps[step];
+    // Note-off the previously playing step, UNLESS it's a legato slide carrying
+    // into a REAL next note (slide->rest must still release). Use mSeqCurrentNote
+    // (the note we actually sent) so a live edit of the playing note can't leave
+    // a stuck note (L11).
+    if (mSeqCurrentStepPlaying >= 0 && mSeqCurrentStepPlaying != step)
+    {
+        const Step& prev = pat.steps[mSeqCurrentStepPlaying];
+        bool nextIsReal = (s.on && s.note >= 0);
+        bool carryLegato = prev.slide && nextIsReal;
+        if (!carryLegato)
+            out.addEvent (juce::MidiMessage::noteOff (1, mSeqCurrentNote, 0.0f), atSample);
+    }
+    if (s.on && s.note >= 0)
+    {
+        uint8 vel = s.accent ? (uint8) 127 : (uint8) 90;
+        out.addEvent (juce::MidiMessage::noteOn (1, s.note, vel), atSample);
+        mSeqCurrentStepPlaying = step;
+        mSeqCurrentNote = s.note;
+    }
+    else
+    {
+        mSeqCurrentStepPlaying = -1; // rest step: silent
+    }
+}
+
 void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
     juce::ScopedNoDenormals noDenormals;
@@ -252,6 +283,7 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
     auto distortionParam = apvts.getRawParameterValue ("distortion");
     auto seqRunParam = apvts.getRawParameterValue ("seqrun");
     auto seqTempoParam = apvts.getRawParameterValue ("seqtempo");
+    auto swingParam = apvts.getRawParameterValue ("swing");
 
     const int numSamples = buffer.getNumSamples();
 
@@ -261,7 +293,7 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
     mSeqMidi.clear();
     mMergeMidi.clear();
     bool seqRunningNow = (seqRunParam->load() > 0.5f);
-    double seqBpm = (double) seqTempoParam->load();
+    double seqBpm = (double) seqTempoParam->load(); // also used by internal timer path
 
     // SPSC double-buffer (L9): commitPattern() copies the edited pattern into
     // the idle mCommitted slot and flips mActiveCommitted (atomic release).
@@ -273,6 +305,7 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
         if (mSeqRunning)
         {
             mSeqStepIndex = 0; mSeqSamplePos = 0; mSeqCurrentStepPlaying = -1; mSeqCurrentNote = -1;
+            mHostSlaved = false; // allow return to internal timer after this run
         }
         else
         {
@@ -284,52 +317,90 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
     }
 
     const Pattern& pat = mCommitted[mActiveCommitted.load()]; // SPSC: read active slot
+
+    // --- Host MIDI-clock slave (Phase 3) ---
+    // Scan host MIDI for clock/start/stop. 24 ppq -> 6 ticks per 16th note.
+    // When the host is sending clock we slave to it (ignore internal tempo).
+    bool hostClockSeen = false, clockStart = false, clockStop = false;
+    mClockTickCount = 0;
+    {
+        juce::MidiBuffer::Iterator hit (midiMessages);
+        juce::MidiMessage hm; int hpos;
+        while (hit.getNextEvent (hm, hpos))
+        {
+            if (hm.isMidiClock())
+            {
+                if (mClockTickCount < 64) mClockTicks[mClockTickCount++] = hpos;
+                hostClockSeen = true;
+            }
+            else if (hm.isMidiStart() || hm.isMidiContinue()) { clockStart = true; hostClockSeen = true; }
+            else if (hm.isMidiStop())  { clockStop = true; hostClockSeen = true; }
+        }
+    }
+
+    if (clockStart)
+    {
+        // Release any note the internal timer is currently holding so a host
+        // Start doesn't strand it (L11/Phase-3 review fix).
+        if (mSeqCurrentNote >= 0)
+            mSeqMidi.addEvent (juce::MidiMessage::noteOff (1, mSeqCurrentNote, 0.0f), 0);
+        mClockRunning = true; mClockTickInStep = 0; mSeqStepIndex = 0;
+        mHostSlaved = true;
+        mSeqCurrentStepPlaying = -1; mSeqCurrentNote = -1;
+    }
+    if (clockStop)
+    {
+        mClockRunning = false;
+        mSeqMidi.addEvent (juce::MidiMessage::allNotesOff (1), 0);
+        mSeqCurrentStepPlaying = -1; mSeqCurrentNote = -1;
+    }
+
     if (mSeqRunning && pat.length >= 1)
     {
-        double samplesPerStep = (60.0 / seqBpm) / 4.0 * mSampleRate; // 16th note
-        int remaining = numSamples;
-        int blockPos = 0;
-        while (remaining > 0)
+        if (mClockRunning)
         {
-            int step = mSeqStepIndex % pat.length;
-            const Step& s = pat.steps[step];
-            if (mSeqCurrentStepPlaying != step)
+            // Slave mode: advance one step every 6 clock ticks, at the tick's
+            // sample position (sample-accurate to the host transport). Gap
+            // blocks (no 0xF8 this block) simply wait — they do NOT fall back
+            // to the internal timer, so there is no double-trigger.
+            for (int k = 0; k < mClockTickCount; ++k)
             {
-                int atSample = blockPos;
-                // Note-off the previously playing step, UNLESS it's a legato slide
-                // carrying into a REAL next note (slide->rest must still release).
-                // Use mSeqCurrentNote (the note we actually sent) so a live edit of
-                // the playing step's note can't leave a stuck note (Phase 2 fix).
-                if (mSeqCurrentStepPlaying >= 0)
+                int t = mClockTicks[k];
+                ++mClockTickInStep;
+                if (mClockTickInStep >= 6)
                 {
-                    const Step& prev = pat.steps[mSeqCurrentStepPlaying];
-                    bool nextIsReal = (s.on && s.note >= 0);
-                    bool carryLegato = prev.slide && nextIsReal;
-                    if (!carryLegato)
-                        mSeqMidi.addEvent (juce::MidiMessage::noteOff (1, mSeqCurrentNote, 0.0f), atSample);
-                }
-                if (s.on && s.note >= 0)
-                {
-                    uint8 vel = s.accent ? (uint8) 127 : (uint8) 90;
-                    mSeqMidi.addEvent (juce::MidiMessage::noteOn (1, s.note, vel), atSample);
-                    mSeqCurrentStepPlaying = step;
-                    mSeqCurrentNote = s.note;
-                }
-                else
-                {
-                    mSeqCurrentStepPlaying = -1; // rest step: silent
+                    mClockTickInStep = 0;
+                    emitStep (mSeqStepIndex, t, pat, mSeqMidi);
+                    ++mSeqStepIndex;
                 }
             }
-            // Advance the clock by the slice up to the end of this step.
-            long long untilStepEnd = (long long) std::ceil (samplesPerStep - (double) mSeqSamplePos);
-            int stepDur = (int) juce::jmin ((long long) remaining, untilStepEnd);
-            mSeqSamplePos += stepDur;
-            remaining -= stepDur;
-            blockPos += stepDur;
-            if (mSeqSamplePos >= samplesPerStep - 0.5)
+        }
+        else if (!mHostSlaved)
+        {
+            // Internal timer (Phase 1) with swing (Phase 3). Swing lengthens the
+            // odd 16th and shortens the even one so the pair still spans 2 steps
+            // (average tempo preserved). swing in [0,0.6]; 0 = straight.
+            double baseStep = (60.0 / seqBpm) / 4.0 * mSampleRate; // 16th note
+            int remaining = numSamples;
+            int blockPos = 0;
+            while (remaining > 0)
             {
-                mSeqSamplePos -= samplesPerStep;
-                mSeqStepIndex++;
+                int step = mSeqStepIndex % pat.length;
+                bool odd = (mSeqStepIndex % 2) == 1;
+                double swing = mSmoothedSwing; // 0..0.6
+                double sps = baseStep * (odd ? (1.0 + swing) : (1.0 - swing));
+                if (mSeqCurrentStepPlaying != step)
+                    emitStep (mSeqStepIndex, blockPos, pat, mSeqMidi);
+                long long untilStepEnd = (long long) std::ceil (sps - (double) mSeqSamplePos);
+                int stepDur = (int) juce::jmin ((long long) remaining, untilStepEnd);
+                mSeqSamplePos += stepDur;
+                remaining -= stepDur;
+                blockPos += stepDur;
+                if (mSeqSamplePos >= sps - 0.5)
+                {
+                    mSeqSamplePos -= sps;
+                    mSeqStepIndex++;
+                }
             }
         }
     }
@@ -362,6 +433,7 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
         float tuneVal = tuneParam->load();
         float waveformVal = waveformParam->load();
         float distVal = distortionParam->load();
+        float swingVal = swingParam->load();
 
         mSmoothedCutoff  += (cutoffVal  - mSmoothedCutoff)  * mParamSmoothCoef;
         mSmoothedReso    += (resoVal    - mSmoothedReso)    * mParamSmoothCoef;
@@ -372,6 +444,7 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
         mSmoothedTune    += (tuneVal    - mSmoothedTune)    * mParamSmoothCoef;
         mWaveform = (int) waveformVal;
         mSmoothedDist    += (distVal    - mSmoothedDist)    * mParamSmoothCoef;
+        mSmoothedSwing   += (swingVal   - mSmoothedSwing)   * mParamSmoothCoef;
 
         // --- Effective VCF cutoff (TB-303 behaviour) ---
         double baseCutoff = cutoffFromKnob (mSmoothedCutoff);

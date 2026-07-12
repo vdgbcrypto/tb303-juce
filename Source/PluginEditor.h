@@ -27,6 +27,7 @@ private:
     juce::Slider seqTempoSlider;
     juce::ComboBox presetCombo;        // built-in 303 pattern presets (60)
     juce::Slider distortionSlider;     // distortion amount 0..1
+    juce::Slider swingSlider;          // swing amount 0..0.6
     juce::ToggleButton abButton;        // A/B pattern select
     juce::TextButton randomButton;
     juce::TextButton clearButton;
@@ -47,6 +48,7 @@ private:
     juce::Label tuneLabel;
     juce::Label waveformLabel;
     juce::Label distortionLabel;
+    juce::Label swingLabel;
 
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> cutoffAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> resonanceAttachment;
@@ -60,6 +62,7 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> seqTempoAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> presetAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> distortionAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> swingAttachment;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TB303Editor)
 };
