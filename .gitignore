@@ -52,3 +52,7 @@ build/seq_test.exe
 build/seq_test.obj
 build/seq_fix_test.exe
 build/seq_fix_test.obj
+
+build/seq_p2_test.exe
+build/seq_p2_test.obj
+seq_p2_test.log

@@ -3,7 +3,7 @@
 TB303Editor::TB303Editor (TB303Processor& p)
     : juce::AudioProcessorEditor (&p), processor (p)
 {
-    setSize (560, 360);
+    setSize (600, 560);
     setResizable (false, false);
 
     const juce::Colour green (0xff00ff41);
@@ -61,6 +61,69 @@ TB303Editor::TB303Editor (TB303Processor& p)
     seqTempoSlider.setColour (juce::Slider::rotarySliderFillColourId, green);
     addAndMakeVisible (seqTempoSlider);
 
+    // ---- Sequencer grid (Phase 2) ----
+    const juce::Colour noteCol (0xff66ccff);
+    for (int i = 0; i < kSteps; ++i)
+    {
+        auto& ns = noteSlider[i];
+        ns.setSliderStyle (juce::Slider::LinearVertical);
+        ns.setRange (24.0, 72.0, 1.0);     // C1..C5 (~3 octaves)
+        ns.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+        ns.setColour (juce::Slider::thumbColourId, noteCol);
+        ns.setColour (juce::Slider::rotarySliderFillColourId, noteCol);
+        ns.onValueChange = [this, i] { auto& p = processor.editPattern(); p.steps[i].note = (int) noteSlider[i].getValue(); processor.commitPattern(); };
+        addAndMakeVisible (ns);
+
+        auto& ob = onButton[i];
+        ob.setButtonText ("On");
+        ob.setColour (juce::ToggleButton::textColourId, green);
+        ob.onClick = [this, i] { auto& p = processor.editPattern(); p.steps[i].on = onButton[i].getToggleState(); processor.commitPattern(); };
+        addAndMakeVisible (ob);
+
+        auto& sb = slideButton[i];
+        sb.setButtonText ("Sl");
+        sb.setColour (juce::ToggleButton::textColourId, green);
+        sb.onClick = [this, i] { auto& p = processor.editPattern(); p.steps[i].slide = slideButton[i].getToggleState(); processor.commitPattern(); };
+        addAndMakeVisible (sb);
+
+        auto& ab = accentButton[i];
+        ab.setButtonText ("Ac");
+        ab.setColour (juce::ToggleButton::textColourId, green);
+        ab.onClick = [this, i] { auto& p = processor.editPattern(); p.steps[i].accent = accentButton[i].getToggleState(); processor.commitPattern(); };
+        addAndMakeVisible (ab);
+    }
+    abButton.setButtonText ("A / B");
+    abButton.setColour (juce::ToggleButton::textColourId, green);
+    abButton.onClick = [this] { processor.setActiveAB (abButton.getToggleState() ? 1 : 0); refreshGrid(); };
+    addAndMakeVisible (abButton);
+
+    randomButton.setButtonText ("Random");
+    randomButton.setColour (juce::TextButton::textColourOffId, green);
+    randomButton.onClick = [this] {
+        auto& p = processor.editPattern();
+        static const int scale[8] = { 0,3,5,7,10,12,15,17 }; // minor pentatonic-ish
+        for (int i = 0; i < kSteps; ++i)
+        {
+            p.steps[i].on = (std::rand() % 100) < 80;
+            p.steps[i].note = 36 + scale[std::rand() % 8] + (std::rand() % 3) * 12;
+            p.steps[i].slide  = (std::rand() % 100) < 20;
+            p.steps[i].accent = (std::rand() % 100) < 25;
+        }
+        processor.commitPattern(); refreshGrid();
+    };
+    addAndMakeVisible (randomButton);
+
+    clearButton.setButtonText ("Clear");
+    clearButton.setColour (juce::TextButton::textColourOffId, green);
+    clearButton.onClick = [this] {
+        auto& p = processor.editPattern();
+        for (int i = 0; i < kSteps; ++i) { p.steps[i].on = false; p.steps[i].slide = false; p.steps[i].accent = false; p.steps[i].note = 36; }
+        processor.commitPattern(); refreshGrid();
+    };
+    addAndMakeVisible (clearButton);
+
+    refreshGrid();
+
     cutoffAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
         processor.apvts, "cutoff", cutoffSlider);
     resonanceAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
@@ -86,6 +149,18 @@ TB303Editor::TB303Editor (TB303Processor& p)
 }
 
 TB303Editor::~TB303Editor() {}
+
+void TB303Editor::refreshGrid()
+{
+    const auto& p = processor.editPattern();   // active A or B
+    for (int i = 0; i < kSteps; ++i)
+    {
+        noteSlider[i].setValue  (p.steps[i].note,   juce::dontSendNotification);
+        onButton[i].setToggleState  (p.steps[i].on,     juce::dontSendNotification);
+        slideButton[i].setToggleState (p.steps[i].slide,  juce::dontSendNotification);
+        accentButton[i].setToggleState(p.steps[i].accent, juce::dontSendNotification);
+    }
+}
 
 void TB303Editor::paint (juce::Graphics& g)
 {
@@ -146,4 +221,24 @@ void TB303Editor::resized()
     const int seqX = bounds.getX() + comboW + 16;
     seqRunButton.setBounds (seqX, rowY, 70, comboH);
     seqTempoSlider.setBounds (seqX + 80, rowY - 6, 64, 64);
+
+    // A/B + Random + Clear, below the sequencer row.
+    const int gridY = rowY + comboH + 10;
+    abButton.setBounds (bounds.getX(), gridY, 70, comboH);
+    randomButton.setBounds (bounds.getX() + 80, gridY, 70, comboH);
+    clearButton.setBounds  (bounds.getX() + 160, gridY, 70, comboH);
+
+    // 16-step grid: a note slider + On/Slide/Accent toggles per step.
+    const int stepW = 34, stepGap = 2, stepStride = stepW + stepGap;
+    const int gridX = bounds.getX();
+    const int noteH = 70, togH = 16, togGap = 2;
+    const int stepTop = gridY + comboH + 8;
+    for (int i = 0; i < kSteps; ++i)
+    {
+        int sx = gridX + i * stepStride;
+        noteSlider[i].setBounds (sx, stepTop, stepW, noteH);
+        onButton[i].setBounds    (sx, stepTop + noteH + togGap, stepW, togH);
+        slideButton[i].setBounds (sx, stepTop + noteH + togGap + (togH + togGap), stepW, togH);
+        accentButton[i].setBounds(sx, stepTop + noteH + togGap + 2 * (togH + togGap), stepW, togH);
+    }
 }

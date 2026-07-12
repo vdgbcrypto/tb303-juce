@@ -56,12 +56,15 @@ public:
         int   length {16};
         double bpm  {120.0};
     };
-    // Lock-free DOUBLE BUFFER: UI thread edits mEditPattern, then commitPattern()
-    // swaps the atomic pointer. Audio thread reads the pointer ONCE per block
-    // (no lock, no copy of contents) -> no heap, no race (L7/L9).
-    Pattern mEditPattern;        // UI-owned, edited then committed
-    Pattern mCommittedPattern;    // the live copy the pointer points at
-    std::atomic<Pattern*> mActivePattern {nullptr};
+    // Two editable patterns (A + B) and a live committed copy the audio
+    // thread points at. UI edits mPatterns[ab], then commitPattern() copies
+    // it into the IDLE committed slot and flips the atomic index (true SPSC
+    // double-buffer: the audio thread only ever reads the slot the producer
+    // is NOT writing -> no concurrent read/write, no data race, L9).
+    Pattern mPatterns[2];       // A (index 0) and B (index 1), UI-editable
+    Pattern mCommitted[2];       // double-buffer slots
+    std::atomic<int> mActiveCommitted {0};
+    int  mActiveAB {0};        // which pattern the grid currently edits (0=A,1=B)
     // Pre-sized member MidiBuffers: clear()'d each block, never re-alloc'd
     // in processBlock (L7).
     juce::MidiBuffer mSeqMidi, mMergeMidi;
@@ -69,14 +72,22 @@ public:
     int  mSeqStepIndex {0};
     long long mSeqSamplePos {0};   // samples since current step started
     double mSeqSamplesPerStep {0.0};
-    // Per-step note scheduling: track which step is currently sounding so we
-    // can emit note-off at the right sample (unless slide -> carry to next).
     int  mSeqCurrentStepPlaying {-1};
+    int  mSeqCurrentNote {-1};    // note actually sent at note-on (for release)
 
-    // UI calls these to edit + publish the pattern (Phase 2 grid editor).
-    void commitPattern() { mCommittedPattern = mEditPattern; mActivePattern.store (&mCommittedPattern); }
-    const Pattern& getPattern() const { return mEditPattern; }
-    Pattern& editPattern() { return mEditPattern; }
+    // UI calls these to edit + publish the pattern (grid editor, Phase 2).
+    int  getActiveAB() const { return mActiveAB; }
+    void setActiveAB (int ab) { mActiveAB = (ab == 0) ? 0 : 1; }
+    Pattern& editPattern() { return mPatterns[mActiveAB]; }
+    // SPSC double-buffer: copy into the IDLE slot, then flip the atomic index
+    // (release). The audio thread reads mActiveCommitted.load() (acquire) and
+    // never touches the slot being written -> no torn read, no data race.
+    void commitPattern()
+    {
+        int other = 1 - mActiveCommitted.load();
+        mCommitted[other] = mPatterns[mActiveAB];
+        mActiveCommitted.store (other);
+    }
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();

@@ -45,15 +45,16 @@ TB303Processor::TB303Processor()
     static const bool accent[16]= { 1,0,0,0,1,0,0,0, 1,0,0,0,0,0,0,0 };
     for (int i = 0; i < 16; ++i)
     {
-        mCommittedPattern.steps[i].note   = notes[i];
-        mCommittedPattern.steps[i].on     = true;
-        mCommittedPattern.steps[i].slide  = slide[i];
-        mCommittedPattern.steps[i].accent = accent[i];
+        mPatterns[0].steps[i].note   = notes[i];
+        mPatterns[0].steps[i].on     = true;
+        mPatterns[0].steps[i].slide  = slide[i];
+        mPatterns[0].steps[i].accent = accent[i];
     }
-    mCommittedPattern.length = 16;
-    mCommittedPattern.bpm    = 120.0;
-    mEditPattern = mCommittedPattern;
-    mActivePattern.store (&mCommittedPattern); // audio thread reads this
+    mPatterns[0].length = 16;
+    mPatterns[0].bpm    = 120.0;
+    mPatterns[1] = mPatterns[0];   // B starts as a copy of A
+    mCommitted[0] = mPatterns[0];
+    mActiveCommitted.store (0);
     reset();
 }
 
@@ -225,52 +226,57 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
     bool seqRunningNow = (seqRunParam->load() > 0.5f);
     double seqBpm = (double) seqTempoParam->load();
 
-    // Lock-free double-buffer: atomic pointer swap in commitPattern() (UI thread).
-    // Audio thread reads the pointer ONCE per block, no lock, no copy of contents.
+    // SPSC double-buffer (L9): commitPattern() copies the edited pattern into
+    // the idle mCommitted slot and flips mActiveCommitted (atomic release).
+    // The audio thread reads mActiveCommitted.load() (acquire) and never
+    // touches the slot the producer is writing -> no torn read, no data race.
     if (seqRunningNow != mSeqRunning)
     {
         mSeqRunning = seqRunningNow;
         if (mSeqRunning)
         {
-            mSeqStepIndex = 0; mSeqSamplePos = 0; mSeqCurrentStepPlaying = -1;
+            mSeqStepIndex = 0; mSeqSamplePos = 0; mSeqCurrentStepPlaying = -1; mSeqCurrentNote = -1;
         }
         else
         {
             // STOP: kill any sounding note (incl. slid/ghost) via all-notes-off,
             // and reset sequencer state so a fresh RUN starts clean.
             mSeqMidi.addEvent (juce::MidiMessage::allNotesOff (1), 0);
-            mSeqCurrentStepPlaying = -1;
+            mSeqCurrentStepPlaying = -1; mSeqCurrentNote = -1;
         }
     }
 
-    const Pattern* pat = mActivePattern.load();
-    if (mSeqRunning && pat != nullptr && pat->length >= 1)
+    const Pattern& pat = mCommitted[mActiveCommitted.load()]; // SPSC: read active slot
+    if (mSeqRunning && pat.length >= 1)
     {
         double samplesPerStep = (60.0 / seqBpm) / 4.0 * mSampleRate; // 16th note
         int remaining = numSamples;
         int blockPos = 0;
         while (remaining > 0)
         {
-            int step = mSeqStepIndex % pat->length;
-            const Step& s = pat->steps[step];
+            int step = mSeqStepIndex % pat.length;
+            const Step& s = pat.steps[step];
             if (mSeqCurrentStepPlaying != step)
             {
                 int atSample = blockPos;
                 // Note-off the previously playing step, UNLESS it's a legato slide
                 // carrying into a REAL next note (slide->rest must still release).
+                // Use mSeqCurrentNote (the note we actually sent) so a live edit of
+                // the playing step's note can't leave a stuck note (Phase 2 fix).
                 if (mSeqCurrentStepPlaying >= 0)
                 {
-                    const Step& prev = pat->steps[mSeqCurrentStepPlaying];
+                    const Step& prev = pat.steps[mSeqCurrentStepPlaying];
                     bool nextIsReal = (s.on && s.note >= 0);
                     bool carryLegato = prev.slide && nextIsReal;
                     if (!carryLegato)
-                        mSeqMidi.addEvent (juce::MidiMessage::noteOff (1, prev.note, 0.0f), atSample);
+                        mSeqMidi.addEvent (juce::MidiMessage::noteOff (1, mSeqCurrentNote, 0.0f), atSample);
                 }
                 if (s.on && s.note >= 0)
                 {
                     uint8 vel = s.accent ? (uint8) 127 : (uint8) 90;
                     mSeqMidi.addEvent (juce::MidiMessage::noteOn (1, s.note, vel), atSample);
                     mSeqCurrentStepPlaying = step;
+                    mSeqCurrentNote = s.note;
                 }
                 else
                 {

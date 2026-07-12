@@ -94,7 +94,29 @@ Prevention: (1) Use the CANONICAL polyBlep verbatim (Tale/Finke):
 (e.g. 9kHz): naïve square vs BLEP should show ~95% alias-energy reduction.
 Peak-delta is NOT a valid band-limiting metric.
 
+### L10 — Lock-free pattern handoff MUST be a true SPSC double-buffer
+Error: a "double-buffer" that points mActivePattern at ONE shared
+mCommittedPattern and only does mCommitted = mPatterns[ab]; store(ptr) is a
+NO-OP swap (the pointer value never changes) -> the atomic establishes NO
+happens-before on the data, so the audio thread can read a torn/half-written
+Step mid-block. That is a real data race / UB.
+Prevention: TWO committed slots mCommitted[2] + std::atomic<int>
+mActiveCommitted. commitPattern() copies into the IDLE slot (1 - active) then
+flips the index (release). Audio reads mCommitted[mActiveCommitted.load()]
+(acquire). Producer and consumer NEVER touch the same slot -> no torn read,
+no data race (L9). Do NOT point an atomic at a single shared buffer and call
+it a swap.
 
+### L11 — Release the note you actually SCHEDULED, not the live pattern note
+Error: emitting noteOff(pat->steps[playing].note) re-reads the pattern at
+release time. If the user edits the playing step's note while running, the
+note sounding (e.g. 48) diverges from the now-committed note (e.g. 36) ->
+noteOff(36) is sent and 48 is left STUCK. (Phase 2 regression once the
+committed buffer became mutable.)
+Prevention: snapshot mSeqCurrentNote = s.note at note-on; emit
+noteOff(mSeqCurrentNote) at release. Reset mSeqCurrentNote=-1 on STOP/START.
+
+---
 ---
 
 ## Standing environment facts (persist across sessions)

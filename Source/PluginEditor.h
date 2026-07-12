@@ -10,6 +10,7 @@ public:
 
     void paint (juce::Graphics&) override;
     void resized() override;
+    void refreshGrid();   // load active pattern (A/B) into the 16-step widgets
 
 private:
     TB303Processor& processor;
@@ -25,6 +26,16 @@ private:
     juce::ToggleButton bypassButton;
     juce::ToggleButton seqRunButton;
     juce::Slider seqTempoSlider;
+    juce::ToggleButton abButton;        // A/B pattern select
+    juce::TextButton randomButton;
+    juce::TextButton clearButton;
+
+    // 16-step grid (Phase 2): per step a note slider + On/Slide/Accent toggles.
+    static constexpr int kSteps = 16;
+    juce::Slider noteSlider[kSteps];
+    juce::ToggleButton onButton[kSteps];
+    juce::ToggleButton slideButton[kSteps];
+    juce::ToggleButton accentButton[kSteps];
 
     juce::Label cutoffLabel;
     juce::Label resonanceLabel;
