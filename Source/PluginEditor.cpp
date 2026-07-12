@@ -3,7 +3,7 @@
 TB303Editor::TB303Editor (TB303Processor& p)
     : juce::AudioProcessorEditor (&p), processor (p)
 {
-    setSize (560, 320);
+    setSize (560, 360);
     setResizable (false, false);
 
     const juce::Colour green (0xff00ff41);
@@ -38,6 +38,17 @@ TB303Editor::TB303Editor (TB303Processor& p)
     makeKnob (volumeSlider,    volumeLabel,    "VOLUME");
     makeKnob (tuneSlider,      tuneLabel,      "TUNE");
 
+    waveformCombo.addItem ("Saw", 1);
+    waveformCombo.addItem ("Square", 2);
+    waveformCombo.addItem ("Saw+Square", 3);
+    waveformCombo.setSelectedId (1);
+    addAndMakeVisible (waveformCombo);
+    waveformLabel.setText ("WAVE", juce::dontSendNotification);
+    waveformLabel.setJustificationType (juce::Justification::centred);
+    waveformLabel.setColour (juce::Label::textColourId, green);
+    waveformLabel.setFont (juce::Font (12.0f, juce::Font::bold));
+    addAndMakeVisible (waveformLabel);
+
     addAndMakeVisible (bypassButton);
     bypassButton.setButtonText ("Bypass");
 
@@ -55,6 +66,8 @@ TB303Editor::TB303Editor (TB303Processor& p)
         processor.apvts, "volume", volumeSlider);
     tuneAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
         processor.apvts, "tune", tuneSlider);
+    waveformAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(
+        processor.apvts, "waveform", waveformCombo);
     bypassAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
         processor.apvts, "bypass", bypassButton);
 }
@@ -107,6 +120,11 @@ void TB303Editor::resized()
     tuneSlider.setBounds (x, knobY, knobSize, knobSize);
     tuneLabel.setBounds (x, knobY + knobSize, knobSize, labelH);
 
-    const int btnY = knobY + knobSize + labelH + 16;
-    bypassButton.setBounds (bounds.withWidth (80).withHeight (24).translated ((bounds.getWidth() - 80) / 2, 0).withY (btnY));
+    // Second row: waveform selector + bypass
+    const int rowY = knobY + knobSize + labelH + 14;
+    const int comboW = 120, comboH = 24;
+    waveformCombo.setBounds (bounds.getX(), rowY, comboW, comboH);
+    waveformLabel.setBounds (bounds.getX(), rowY + comboH, comboW, labelH);
+
+    bypassButton.setBounds (bounds.getRight() - 80, rowY, 80, comboH);
 }

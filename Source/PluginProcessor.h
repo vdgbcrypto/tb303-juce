@@ -31,6 +31,17 @@ public:
 
     juce::AudioProcessorValueTreeState apvts;
 
+    // Mono note stack (last-note priority, legato). Fixed-size to avoid any
+    // heap allocation on the audio thread (processBlock must not allocate).
+    static constexpr int kMaxNotes = 8;
+    int mNoteStack [kMaxNotes] {};
+    int mNoteStackSize {0};
+    double mTargetFreq {110.0};   // MIDI-target frequency (Hz)
+    double mPortaFreq {110.0};    // glided frequency actually used by the osc
+    double mPortaCoeff {0.0};     // per-sample portamento coeff (set in prepareToPlay)
+    double mAccentAmount {0.0};   // per-note accent = knob * velocity (0..1)
+    int mWaveform {0};            // 0=saw, 1=square, 2=saw+square
+
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     
@@ -73,8 +84,6 @@ private:
     double mCutoffHz {1000.0};   // effective VCF cutoff (folds in env-mod + accent)
     double mDamping {0.707};     // SVF damping (LOW = more resonance / self-osc)
     double mEnvPeak {1.0};       // envelope peak this note (for env-mod normalisation)
-    float noteFrequency {0.0f};
-    float activeLevel {0.0f};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TB303Processor)
 };

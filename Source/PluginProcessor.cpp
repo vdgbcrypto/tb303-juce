@@ -18,6 +18,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout TB303Processor::createParame
         juce::ParameterID {"volume", 1}, "Volume", 0.0f, 1.0f, 0.5f));
     params.push_back(std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID {"tune", 1}, "Tune", 0.0f, 1.0f, 0.5f));
+    juce::StringArray waveChoices;
+    waveChoices.add ("Saw");
+    waveChoices.add ("Square");
+    waveChoices.add ("Saw+Square");
+    params.push_back(std::make_unique<juce::AudioParameterChoice>(
+        juce::ParameterID {"waveform", 1}, "Waveform", waveChoices, 0));
     params.push_back(std::make_unique<juce::AudioParameterBool>(
         juce::ParameterID {"bypass", 1}, "Bypass", false));
     return { params.begin(), params.end() };
@@ -36,6 +42,9 @@ void TB303Processor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     mSampleRate = sampleRate;
     updateSmoothing (sampleRate);
+    // Fixed mono portamento (303 slide feel); per-sample glide in processBlock.
+    const double portaTime = 0.006; // seconds
+    mPortaCoeff = 1.0 - std::exp (-1.0 / (portaTime * sampleRate));
     reset();
 }
 
@@ -48,6 +57,11 @@ void TB303Processor::reset()
     mPhase = 0.0;
     mEnvLevel = 0.0;
     mNoteOn = false;
+    mNoteStackSize = 0;
+    mTargetFreq = 110.0;
+    mPortaFreq = 110.0;
+    mAccentAmount = 0.0;
+    mWaveform = 0;
     mSmoothedBypass = 0.0;
     mSmoothedCutoff = mCutoff;
     mSmoothedReso = mResonance;
@@ -154,6 +168,7 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
     auto accentParam = apvts.getRawParameterValue ("accent");
     auto volumeParam = apvts.getRawParameterValue ("volume");
     auto tuneParam = apvts.getRawParameterValue ("tune");
+    auto waveformParam = apvts.getRawParameterValue ("waveform");
     auto bypassParam = apvts.getRawParameterValue ("bypass");
 
     if (mBypass)
@@ -187,6 +202,7 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
         float accentVal = accentParam->load();
         float volumeVal = volumeParam->load();
         float tuneVal = tuneParam->load();
+        float waveformVal = waveformParam->load();
         float bypassVal = bypassParam->load();
 
         mSmoothedCutoff  += (cutoffVal  - mSmoothedCutoff)  * mParamSmoothCoef;
@@ -196,6 +212,7 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
         mSmoothedAccent  += (accentVal  - mSmoothedAccent)  * mParamSmoothCoef;
         mSmoothedVolume  += (volumeVal  - mSmoothedVolume)  * mParamSmoothCoef;
         mSmoothedTune    += (tuneVal    - mSmoothedTune)    * mParamSmoothCoef;
+        mWaveform = (int) waveformVal;
         mSmoothedBypass  += ((bypassVal > 0.5f ? 1.0 : 0.0) - mSmoothedBypass) * mBypassSmoothCoef;
         mBypass = mSmoothedBypass > 0.5f;
 
@@ -222,18 +239,48 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
         {
             if (midiMsg.isNoteOn())
             {
-                noteFrequency = juce::MidiMessage::getMidiNoteInHertz (midiMsg.getNoteNumber());
-                activeLevel = 1.0f;
+                const int note = midiMsg.getNoteNumber();
+                const double vel = (double) midiMsg.getVelocity() / 127.0; // 0..1
+                // Mono, last-note priority on a fixed stack (no heap alloc).
+                // Dedupe first so an overlapping same-note on doesn't double-push.
+                int w = 0;
+                for (int r = 0; r < mNoteStackSize; ++r)
+                    if (mNoteStack[r] != note) mNoteStack[w++] = mNoteStack[r];
+                mNoteStackSize = w;
+                if (mNoteStackSize < kMaxNotes)
+                    mNoteStack[mNoteStackSize++] = note;
+                mTargetFreq = juce::MidiMessage::getMidiNoteInHertz (note);
+                // Snap pitch (no glide) on the first note of a silent voice so we
+                // don't zip from the stale 110 Hz default; legato/overlap glides.
+                if (!mNoteOn && mEnvLevel < 1.0e-4)
+                    mPortaFreq = mTargetFreq;
+                // Accent per-note from velocity * global ACCENT knob (live 303
+                // maps sequencer accent -> here velocity drives it).
+                mAccentAmount = juce::jlimit (0.0, 1.0, mSmoothedAccent * vel);
                 mNoteOn = true;
             }
             else if (midiMsg.isNoteOff())
             {
-                activeLevel = 0.0f;
-                mNoteOn = false;
+                // Remove the note from the stack; if others remain, glide to the
+                // most recent (legato) and keep gate on. Otherwise release.
+                const int note = midiMsg.getNoteNumber();
+                int w = 0;
+                for (int r = 0; r < mNoteStackSize; ++r)
+                    if (mNoteStack[r] != note) mNoteStack[w++] = mNoteStack[r];
+                mNoteStackSize = w;
+                if (mNoteStackSize > 0)
+                {
+                    mTargetFreq = juce::MidiMessage::getMidiNoteInHertz (mNoteStack[mNoteStackSize - 1]);
+                    mNoteOn = true; // legato: envelope keeps running, no retrigger
+                }
+                else
+                {
+                    mNoteOn = false;
+                }
             }
             else if (midiMsg.isAllNotesOff() || midiMsg.isAllSoundOff())
             {
-                activeLevel = 0.0f;
+                mNoteStackSize = 0;
                 mNoteOn = false;
             }
 
@@ -242,25 +289,30 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
 
         const int noteGate = mNoteOn ? 1 : 0;
 
-        // Simple oscillator — TUNE is +/- 1 octave about the played note.
-        double freq = noteFrequency * std::pow (2.0, (mSmoothedTune - 0.5) * 2.0);
+        // Mono portamento: glide the actual osc frequency toward the target
+        // (per-sample, click-free; gives the 303 slide feel on legato/overlap).
+        mPortaFreq += (mTargetFreq - mPortaFreq) * mPortaCoeff;
+
+        // Oscillator — TUNE is +/- 1 octave about the played note.
+        double freq = mPortaFreq * std::pow (2.0, (mSmoothedTune - 0.5) * 2.0);
         mPhase += (freq * 2.0 * juce::MathConstants<double>::pi) / mSampleRate;
         if (mPhase > 2.0 * juce::MathConstants<double>::pi) mPhase -= 2.0 * juce::MathConstants<double>::pi;
 
-        double saw = (mPhase / juce::MathConstants<double>::pi) - 1.0;
-        double sq = (mPhase < juce::MathConstants<double>::pi) ? 0.7 : -0.7;
-        double osc = (saw * 0.6 + sq * 0.4) * activeLevel;
+        // Waveform: 0=saw, 1=square (full +/-1), 2=saw+square mix.
+        double saw = (mPhase / juce::MathConstants<double>::pi) - 1.0;       // -1..1
+        double sq  = (mPhase < juce::MathConstants<double>::pi) ? 1.0 : -1.0; // +/-1
+        double osc = (mWaveform == 1) ? sq : (mWaveform == 2 ? saw * 0.5 + sq * 0.5 : saw);
 
         // Filter (2 cascaded SVF stages)
         double filtered = processFilterStage (osc, 0);
         filtered = processFilterStage (filtered, 1);
 
-        // Envelope + drive + output
+        // Envelope is the VCA (amplitude) AND drives the cutoff sweep. This
+        // removes the hard 0/1 gate click; release decays smoothly.
         double env = envelopeStep (noteGate);
-        // Accent boosts amplitude on accented notes (in addition to opening the
-        // filter, handled in the cutoff calc above).
-        double accented = env * (1.0 + mSmoothedAccent * 0.3);
-        double driven = driveSignal (filtered * accented * 1.2, mSmoothedAccent * 0.5);
+        // Accent (per-note) is already folded into envPeak, so amplitude tracks
+        // it; add the modest extra drive only.
+        double driven = driveSignal (filtered * env * 1.2, mAccentAmount * 0.5);
         double out = driven * mSmoothedVolume * 0.8;
 
         left[sample] = (float) out;

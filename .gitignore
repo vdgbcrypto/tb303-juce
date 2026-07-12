@@ -31,3 +31,8 @@ selfosc_test.log
 # all dsp_test build artifacts
 *.obj
 build/*.exe
+
+# voice test artifact
+voice_test.log
+build/voice_test.exe
+build/voice_test.obj

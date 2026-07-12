@@ -21,6 +21,7 @@ private:
     juce::Slider accentSlider;
     juce::Slider volumeSlider;
     juce::Slider tuneSlider;
+    juce::ComboBox waveformCombo;
     juce::ToggleButton bypassButton;
 
     juce::Label cutoffLabel;
@@ -30,6 +31,7 @@ private:
     juce::Label accentLabel;
     juce::Label volumeLabel;
     juce::Label tuneLabel;
+    juce::Label waveformLabel;
 
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> cutoffAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> resonanceAttachment;
@@ -38,6 +40,7 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> accentAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> volumeAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> tuneAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> waveformAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bypassAttachment;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TB303Editor)

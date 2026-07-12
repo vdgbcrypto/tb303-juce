@@ -46,6 +46,22 @@ Error: `cutoffFromKnob` exponent 3.7 pushed the top of the knob to ~90kHz,
 clamping at Nyquist and leaving the top ~12% of travel dead.
 Prevention: exponent 3.0 gives ~18Hz..18kHz with the low-end-weighted taper.
 
+### L6 — Hard 0/1 amplitude gate causes note-on/off clicks
+Error: amplitude was `osc * activeLevel` where activeLevel was a hard 0/1 switch
+toggled at note-on/off. That injects a discontinuity (click) at every note edge.
+Prevention: the envelope (VCA) is the amplitude — `out = drive(filtered * env) * vol`.
+Gate transitions only start/stop the envelope (attack/decay ramp), so edges are
+smooth. Do NOT multiply by a hard gate.
+
+### L7 — Mono voice: no heap alloc, fixed note stack, legato
+Error (avoided): allocating a note list inside processBlock violates the
+no-alloc-on-audio-thread rule. Also retriggering the envelope on every
+overlapping note kills authentic legato.
+Prevention: fixed-size `int mNoteStack[8]` (last-note priority, no heap). Gate
+stays 1 while >=1 note held, so the shared AD envelope does NOT retrigger on
+legato note changes (only on 0->1 gate). Per-note portamento glides pitch
+(mPortaFreq += (target-porta)*coeff) per sample. Accent is per-note = knob*velocity.
+
 ---
 
 ## Standing environment facts (persist across sessions)
