@@ -44,3 +44,15 @@ build/blep_test.exe
 build/blep_test.obj
 build/blep_dbg.exe
 build/blep_dbg.obj
+
+# sequencer test artifacts
+seq_test.log
+seq_fix_test.log
+build/seq_test.exe
+build/seq_test.obj
+build/seq_fix_test.exe
+build/seq_fix_test.obj
+
+build/seq_p2_test.exe
+build/seq_p2_test.obj
+seq_p2_test.log

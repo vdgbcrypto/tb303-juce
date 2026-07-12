@@ -10,6 +10,15 @@ gets a "Lesson Learned" entry so it is never repeated. Format:
 
 ### L1 — Parameter smoothing applied per-block, not per-sample
 Error: The 10ms exponential smoothing coefficient was computed for per-sample
+application but applied once per block, stretching the effective time constant
+to several seconds and making every knob feel laggy/unresponsive.
+Prevention: compute the coefficient for per-sample use and apply it inside the
+per-sample loop (mParamSmoothCoef = 1 - exp(-1/(0.01*sr))), not once per block.
+
+  ---
+
+### L1 — Parameter smoothing applied per-block, not per-sample
+Error: The 10ms exponential smoothing coefficient was computed for per-sample
 use but applied ONCE per block (before the sample loop). At a 256-sample buffer
 that inflated the time constant to ~8s, so every knob (cutoff, volume, etc.)
 felt laggy / "does nothing" because it crawled to target over seconds.
@@ -62,6 +71,25 @@ stays 1 while >=1 note held, so the shared AD envelope does NOT retrigger on
 legato note changes (only on 0->1 gate). Per-note portamento glides pitch
 (mPortaFreq += (target-porta)*coeff) per sample. Accent is per-note = knob*velocity.
 
+### L9 — Sequencer: lock-free copy, slides = omitted note-off, sample-accurate clock
+Error: a step sequencer must drive the voice WITHOUT allocating on the audio
+thread, and SLIDE must be legato (glide + no envelope retrigger), not a retriggered
+note. Sub-block step boundaries must land at the exact sample (no block-quantised drift).
+Prevention: (1) Pattern (16 Steps, fixed-size, no heap). TRUE LOCK-FREE
+DOUBLE BUFFER: UI thread edits mEditPattern then commitPattern() copies it into
+mCommittedPattern and swaps the atomic mActivePattern pointer. The audio
+thread reads mActivePattern.load() ONCE per block (no lock, no copy of
+contents) -> race-free + allocation-free (L7). Do NOT copy Pattern into a
+stack local under a lock (that was the wrong first attempt). (2) SLIDE: if a step has slide=true, OMIT its note-off so the
+next step's note-on is legato (voice glides pitch, shared AD envelope does not
+retrigger). (3) Clock: samplesPerStep = (60/bpm)/4 * sr (16th note); advance
+mSeqSamplePos per sub-block slice; place note-on/off at the exact blockPos
+sample. Verified: step spacing error = 0.00 samples. (4) REST (on=false) = no
+note-on (silence). (5) On STOP, do NOT leave a stuck note — next processBlock
+with seq off stops emitting; ensure any held note is released (the voice's own
+note-off / all-notes-off path handles it).
+
+
 ### L8 — BLEP: verify aliasing with FFT, not peak-delta; use canonical formula
 Error: when adding polyBlep band-limiting to the square/saw, a naive
 "peak sample-to-sample jump" test gives a FALSE NEGATIVE — polyBlep correctly
@@ -75,7 +103,45 @@ Prevention: (1) Use the CANONICAL polyBlep verbatim (Tale/Finke):
 (e.g. 9kHz): naïve square vs BLEP should show ~95% alias-energy reduction.
 Peak-delta is NOT a valid band-limiting metric.
 
+### L10 — Lock-free pattern handoff MUST be a true SPSC double-buffer
+Error: a "double-buffer" that points mActivePattern at ONE shared
+mCommittedPattern and only does mCommitted = mPatterns[ab]; store(ptr) is a
+NO-OP swap (the pointer value never changes) -> the atomic establishes NO
+happens-before on the data, so the audio thread can read a torn/half-written
+Step mid-block. That is a real data race / UB.
+Prevention: TWO committed slots mCommitted[2] + std::atomic<int>
+mActiveCommitted. commitPattern() copies into the IDLE slot (1 - active) then
+flips the index (release). Audio reads mCommitted[mActiveCommitted.load()]
+(acquire). Producer and consumer NEVER touch the same slot -> no torn read,
+no data race (L9). Do NOT point an atomic at a single shared buffer and call
+it a swap.
 
+### L11 — Release the note you actually SCHEDULED, not the live pattern note
+Error: emitting noteOff(pat->steps[playing].note) re-reads the pattern at
+release time. If the user edits the playing step's note while running, the
+note sounding (e.g. 48) diverges from the now-committed note (e.g. 36) ->
+noteOff(36) is sent and 48 is left STUCK. (Phase 2 regression once the
+committed buffer became mutable.)
+Prevention: snapshot mSeqCurrentNote = s.note at note-on; emit
+noteOff(mSeqCurrentNote) at release. Reset mSeqCurrentNote=-1 on STOP/START.
+
+### L12 — MSVC rejects `const` nested-array aggregate init of a struct with an array member
+Error: a `const PPattern kPatterns[3][20]` (PPattern { PStep steps[16]; double bpm; })
+initialized with brace lists fails under MSVC 19.5x with C2078 "too many
+initializers" / C2440 "cannot convert from initializer list to double" — even
+though the SAME shape compiles for a single non-array variable. Raw
+`PStep steps[16]` member + multi-dim `const` array = MSVC brace-elision bug.
+It ALSO fails for a flat 1D `const PPattern[60]` and for `std::array<PStep,16>`
+member with brace init, and a `const int[16]` constructor arg cannot take a
+braced list.
+Prevention (what compiles cleanly): give PPattern a constructor taking
+`const std::array<int,16>&` for each of note/on/slide/accent + a double bpm,
+and store the bank as a FLAT `PPattern kPatterns[60]` (index = genre*20+step),
+each entry a constructor call `PPattern(std::array<int,16>{...}, ...)`. Skip
+const (use a plain global array) and avoid brace-eliding the whole array. This
+sidesteps every MSVC aggregate-init foot-gun. See Source/patterns_data.h.
+
+---
 ---
 
 ## Standing environment facts (persist across sessions)
