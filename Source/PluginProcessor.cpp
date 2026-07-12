@@ -524,6 +524,13 @@ void TB303Processor::setStateInformation (const void* data, int sizeInBytes)
     if (xmlState.get() != nullptr)
         if (xmlState->hasTagName (apvts.state.getType()))
             apvts.replaceState (juce::ValueTree::fromXml (*xmlState));
+
+    // DAW state recall: the ComboBoxAttachment restores the "preset" choice with
+    // dontSendNotification, so its onChange (which calls loadPreset) never fires.
+    // Re-apply the restored preset so the grid + audio match the saved index
+    // (L13). Fix for the DSP-reviewer recall-desync FAIL.
+    if (auto* p = apvts.getParameter ("preset"))
+        loadPreset ((int) p->getValue());
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

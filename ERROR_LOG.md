@@ -141,6 +141,15 @@ each entry a constructor call `PPattern(std::array<int,16>{...}, ...)`. Skip
 const (use a plain global array) and avoid brace-eliding the whole array. This
 sidesteps every MSVC aggregate-init foot-gun. See Source/patterns_data.h.
 
+### L13 — DAW state recall must re-apply the preset (ComboBoxAttachment is silent)
+Error: on setStateInformation the ComboBoxAttachment restores the "preset"
+choice with dontSendNotification, so the dropdown's onChange (which calls
+loadPreset) NEVER fires. The UI shows preset N but mPatterns/audio still hold
+the default pattern -> UI/sound desync until the user manually re-selects.
+Prevention: after apvts.replaceState(...) in setStateInformation, call
+loadPreset((int)apvts.getParameter("preset")->getValue()) so the restored
+index is re-applied to the grid + audio thread (SPSC, L9/L10).
+
 ---
 ---
 
