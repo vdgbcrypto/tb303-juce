@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "patterns_data.h"
 
 juce::AudioProcessorValueTreeState::ParameterLayout TB303Processor::createParameterLayout()
 {
@@ -18,14 +19,21 @@ juce::AudioProcessorValueTreeState::ParameterLayout TB303Processor::createParame
         juce::ParameterID {"volume", 1}, "Volume", 0.0f, 1.0f, 0.5f));
     params.push_back(std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID {"tune", 1}, "Tune", 0.0f, 1.0f, 0.5f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID {"distortion", 1}, "Distortion", 0.0f, 1.0f, 0.0f));
     juce::StringArray waveChoices;
     waveChoices.add ("Saw");
     waveChoices.add ("Square");
     waveChoices.add ("Saw+Square");
     params.push_back(std::make_unique<juce::AudioParameterChoice>(
         juce::ParameterID {"waveform", 1}, "Waveform", waveChoices, 0));
-    params.push_back(std::make_unique<juce::AudioParameterBool>(
-        juce::ParameterID {"bypass", 1}, "Bypass", false));
+    // Built-in 303 pattern presets (60: 20 Acid / 20 Techno / 20 Hardcore).
+    juce::StringArray presetItems;
+    for (int g = 0; g < 3; ++g)
+        for (int i = 0; i < 20; ++i)
+            presetItems.add (juce::String (TB303Presets::kGenreNames[g]) + " - " + TB303Presets::kPatternNames[g][i]);
+    params.push_back(std::make_unique<juce::AudioParameterChoice>(
+        juce::ParameterID {"preset", 1}, "Pattern", presetItems, 0));
     params.push_back(std::make_unique<juce::AudioParameterBool>(
         juce::ParameterID {"seqrun", 1}, "Sequencer Run", false));
     params.push_back(std::make_unique<juce::AudioParameterFloat>(
@@ -88,7 +96,6 @@ void TB303Processor::reset()
     mPortaFreq = 110.0;
     mAccentAmount = 0.0;
     mWaveform = 0;
-    mSmoothedBypass = 0.0;
     mSmoothedCutoff = mCutoff;
     mSmoothedReso = mResonance;
     mSmoothedEnvMod = mEnvMod;
@@ -104,7 +111,6 @@ void TB303Processor::updateSmoothing (double sampleRate)
     // coefficient was applied once per block, which stretched the effective time
     // constant to several seconds and made every knob feel laggy/unresponsive.
     mParamSmoothCoef = 1.0 - std::exp (-1.0 / (0.01 * sampleRate));
-    mBypassSmoothCoef = 1.0 - std::exp (-1.0 / (0.01 * sampleRate));
 }
 
 void TB303Processor::updateFilterCoefficients ()
@@ -193,6 +199,37 @@ double TB303Processor::driveSignal (double x, double drive) const
     return y * (1.5 - 0.5 * y * y);
 }
 
+void TB303Processor::loadPreset (int globalIndex)
+{
+    int g = globalIndex / 20;
+    int i = globalIndex % 20;
+    if (g < 0 || g > 2 || i < 0 || i > 19) return;
+    const auto& p = TB303Presets::kPatterns[globalIndex]; // flat 1D: g*20+i
+    Pattern& dst = mPatterns[mActiveAB];
+    for (int s = 0; s < 16; ++s)
+    {
+        dst.steps[s].note   = p.steps[s].note;
+        dst.steps[s].on     = p.steps[s].on;
+        dst.steps[s].slide  = p.steps[s].slide;
+        dst.steps[s].accent = p.steps[s].accent;
+    }
+    dst.length = 16;
+    dst.bpm = p.bpm;
+    commitPattern();   // publish to the audio thread (SPSC, L9/L10)
+    // Drive the sequencer tempo from the preset BPM.
+    if (auto* tempo = apvts.getParameter ("seqtempo"))
+        tempo->setValueNotifyingHost ((float) (p.bpm < 40.0 ? 40.0 : (p.bpm > 240.0 ? 240.0 : p.bpm)));
+}
+
+juce::StringArray TB303Processor::presetChoices() const
+{
+    juce::StringArray items;
+    for (int g = 0; g < 3; ++g)
+        for (int i = 0; i < 20; ++i)
+            items.add (juce::String (TB303Presets::kGenreNames[g]) + " - " + TB303Presets::kPatternNames[g][i]);
+    return items;
+}
+
 void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
     juce::ScopedNoDenormals noDenormals;
@@ -212,7 +249,7 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
     auto volumeParam = apvts.getRawParameterValue ("volume");
     auto tuneParam = apvts.getRawParameterValue ("tune");
     auto waveformParam = apvts.getRawParameterValue ("waveform");
-    auto bypassParam = apvts.getRawParameterValue ("bypass");
+    auto distortionParam = apvts.getRawParameterValue ("distortion");
     auto seqRunParam = apvts.getRawParameterValue ("seqrun");
     auto seqTempoParam = apvts.getRawParameterValue ("seqtempo");
 
@@ -300,12 +337,6 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
     mMergeMidi.addEvents (mSeqMidi, 0, numSamples, 0);
     mMergeMidi.addEvents (midiMessages, 0, numSamples, 0);
 
-    if (mBypass)
-    {
-        // Buffer was already cleared above; bypass silences output for this instrument.
-        return;
-    }
-
     auto* left = buffer.getWritePointer (0);
     auto* right = buffer.getWritePointer (1);
 
@@ -330,7 +361,7 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
         float volumeVal = volumeParam->load();
         float tuneVal = tuneParam->load();
         float waveformVal = waveformParam->load();
-        float bypassVal = bypassParam->load();
+        float distVal = distortionParam->load();
 
         mSmoothedCutoff  += (cutoffVal  - mSmoothedCutoff)  * mParamSmoothCoef;
         mSmoothedReso    += (resoVal    - mSmoothedReso)    * mParamSmoothCoef;
@@ -340,8 +371,7 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
         mSmoothedVolume  += (volumeVal  - mSmoothedVolume)  * mParamSmoothCoef;
         mSmoothedTune    += (tuneVal    - mSmoothedTune)    * mParamSmoothCoef;
         mWaveform = (int) waveformVal;
-        mSmoothedBypass  += ((bypassVal > 0.5f ? 1.0 : 0.0) - mSmoothedBypass) * mBypassSmoothCoef;
-        mBypass = mSmoothedBypass > 0.5f;
+        mSmoothedDist    += (distVal    - mSmoothedDist)    * mParamSmoothCoef;
 
         // --- Effective VCF cutoff (TB-303 behaviour) ---
         double baseCutoff = cutoffFromKnob (mSmoothedCutoff);
@@ -444,9 +474,29 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
         // Envelope is the VCA (amplitude) AND drives the cutoff sweep. This
         // removes the hard 0/1 gate click; release decays smoothly.
         double env = envelopeStep (noteGate);
+
+        // Distortion stage (303-style grit): at dist=0 it is a clean passthrough
+        // (just a unity gain); as dist rises it applies an asymmetric soft
+        // waveshaper (slight DC bias + tanh saturation + a squared term) that
+        // adds harmonics and squelch without blowing up. Applied BEFORE the VCA
+        // like a real drive stage. No alloc, no branch in the hot path beyond
+        // the blend (L7).
+        double shaperIn = filtered;
+        double drive = mSmoothedDist;            // 0..1
+        double shaped = shaperIn;
+        if (drive > 0.0001)
+        {
+            // asymmetric: bias up a touch, then saturate + fold a bit of 2nd-harmonic
+            double x = shaperIn * (1.0 + drive * 6.0) + drive * 0.15;
+            double sat = std::tanh (x);
+            double fold = sat + drive * 0.3 * std::sin (x * 2.0);
+            shaped = shaperIn * (1.0 - drive) + fold * drive;   // blend clean->driven
+        }
+        shaped = juce::jlimit (-1.2, 1.2, shaped);
+
         // Accent (per-note) is already folded into envPeak, so amplitude tracks
         // it; add the modest extra drive only.
-        double driven = driveSignal (filtered * env * 1.2, mAccentAmount * 0.5);
+        double driven = driveSignal (shaped * env * 1.2, mAccentAmount * 0.5);
         double out = driven * mSmoothedVolume * 0.8;
 
         left[sample] = (float) out;

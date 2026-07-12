@@ -88,6 +88,12 @@ public:
         mCommitted[other] = mPatterns[mActiveAB];
         mActiveCommitted.store (other);
     }
+    // Load a built-in preset (global index g*20+i) into the active editable
+    // pattern, publish it, and set the sequencer tempo to the preset BPM.
+    // Runs on the UI thread; commitPattern() makes it visible to the audio thread.
+    void loadPreset (int globalIndex);
+    // Build the ComboBox item list for the preset dropdown: "Genre - Name".
+    juce::StringArray presetChoices() const;
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
@@ -114,7 +120,6 @@ private:
     double mAccent {0.0};
     double mVolume {0.5};
     double mTune {0.5};
-    bool mBypass {false};
 
     double mSmoothedCutoff {0.5};
     double mSmoothedReso {0.0};
@@ -123,14 +128,13 @@ private:
     double mSmoothedAccent {0.0};
     double mSmoothedVolume {0.5};
     double mSmoothedTune {0.5};
+    double mSmoothedDist {0.0}; // smoothed distortion amount (0..1)
     double mEnvLevel {0.0};
     bool mNoteOn {false};
     SVF mStage1;
     SVF mStage2;
     double mPhase {0.0};
     double mParamSmoothCoef {0.0};
-    double mBypassSmoothCoef {0.0};
-    double mSmoothedBypass {0.0};
     double mCutoffHz {1000.0};   // effective VCF cutoff (folds in env-mod + accent)
     double mDamping {0.707};     // SVF damping (LOW = more resonance / self-osc)
     double mEnvPeak {1.0};       // envelope peak this note (for env-mod normalisation)

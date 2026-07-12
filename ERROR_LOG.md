@@ -10,6 +10,15 @@ gets a "Lesson Learned" entry so it is never repeated. Format:
 
 ### L1 — Parameter smoothing applied per-block, not per-sample
 Error: The 10ms exponential smoothing coefficient was computed for per-sample
+application but applied once per block, stretching the effective time constant
+to several seconds and making every knob feel laggy/unresponsive.
+Prevention: compute the coefficient for per-sample use and apply it inside the
+per-sample loop (mParamSmoothCoef = 1 - exp(-1/(0.01*sr))), not once per block.
+
+  ---
+
+### L1 — Parameter smoothing applied per-block, not per-sample
+Error: The 10ms exponential smoothing coefficient was computed for per-sample
 use but applied ONCE per block (before the sample loop). At a 256-sample buffer
 that inflated the time constant to ~8s, so every knob (cutoff, volume, etc.)
 felt laggy / "does nothing" because it crawled to target over seconds.
@@ -115,6 +124,22 @@ noteOff(36) is sent and 48 is left STUCK. (Phase 2 regression once the
 committed buffer became mutable.)
 Prevention: snapshot mSeqCurrentNote = s.note at note-on; emit
 noteOff(mSeqCurrentNote) at release. Reset mSeqCurrentNote=-1 on STOP/START.
+
+### L12 — MSVC rejects `const` nested-array aggregate init of a struct with an array member
+Error: a `const PPattern kPatterns[3][20]` (PPattern { PStep steps[16]; double bpm; })
+initialized with brace lists fails under MSVC 19.5x with C2078 "too many
+initializers" / C2440 "cannot convert from initializer list to double" — even
+though the SAME shape compiles for a single non-array variable. Raw
+`PStep steps[16]` member + multi-dim `const` array = MSVC brace-elision bug.
+It ALSO fails for a flat 1D `const PPattern[60]` and for `std::array<PStep,16>`
+member with brace init, and a `const int[16]` constructor arg cannot take a
+braced list.
+Prevention (what compiles cleanly): give PPattern a constructor taking
+`const std::array<int,16>&` for each of note/on/slide/accent + a double bpm,
+and store the bank as a FLAT `PPattern kPatterns[60]` (index = genre*20+step),
+each entry a constructor call `PPattern(std::array<int,16>{...}, ...)`. Skip
+const (use a plain global array) and avoid brace-eliding the whole array. This
+sidesteps every MSVC aggregate-init foot-gun. See Source/patterns_data.h.
 
 ---
 ---

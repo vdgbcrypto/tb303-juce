@@ -49,8 +49,17 @@ TB303Editor::TB303Editor (TB303Processor& p)
     waveformLabel.setFont (juce::Font (12.0f, juce::Font::bold));
     addAndMakeVisible (waveformLabel);
 
-    addAndMakeVisible (bypassButton);
-    bypassButton.setButtonText ("Bypass");
+    // Distortion knob (manual, placed in the sequencer row, not the 7-knob row).
+    distortionSlider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
+    distortionSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 46, 16);
+    distortionSlider.setRange (0.0, 1.0, 0.01);
+    distortionSlider.setColour (juce::Slider::rotarySliderFillColourId, green);
+    addAndMakeVisible (distortionSlider);
+    distortionLabel.setText ("DRIVE", juce::dontSendNotification);
+    distortionLabel.setJustificationType (juce::Justification::centred);
+    distortionLabel.setColour (juce::Label::textColourId, green);
+    distortionLabel.setFont (juce::Font (12.0f, juce::Font::bold));
+    addAndMakeVisible (distortionLabel);
 
     // Sequencer (Phase 1): Run toggle + Tempo knob.
     addAndMakeVisible (seqRunButton);
@@ -140,12 +149,28 @@ TB303Editor::TB303Editor (TB303Processor& p)
         processor.apvts, "tune", tuneSlider);
     waveformAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(
         processor.apvts, "waveform", waveformCombo);
-    bypassAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
-        processor.apvts, "bypass", bypassButton);
+    // Built-in 303 pattern presets dropdown (60: 20 Acid / 20 Techno / 20 Hardcore).
+    presetCombo.addItemList (processor.presetChoices(), 1);
+    presetCombo.setSelectedItemIndex (0, juce::dontSendNotification);
+    presetCombo.onChange = [this] {
+        processor.loadPreset (presetCombo.getSelectedItemIndex());
+        refreshGrid();   // show the loaded pattern in the grid
+    };
+    addAndMakeVisible (presetCombo);
+    // Distortion knob.
+    distortionSlider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
+    distortionSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 46, 16);
+    distortionSlider.setRange (0.0, 1.0, 0.01);
+    distortionSlider.setColour (juce::Slider::rotarySliderFillColourId, green);
+    addAndMakeVisible (distortionSlider);
     seqRunAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
         processor.apvts, "seqrun", seqRunButton);
     seqTempoAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
         processor.apvts, "seqtempo", seqTempoSlider);
+    presetAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(
+        processor.apvts, "preset", presetCombo);
+    distortionAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
+        processor.apvts, "distortion", distortionSlider);
 }
 
 TB303Editor::~TB303Editor() {}
@@ -208,22 +233,25 @@ void TB303Editor::resized()
     tuneSlider.setBounds (x, knobY, knobSize, knobSize);
     tuneLabel.setBounds (x, knobY + knobSize, knobSize, labelH);
 
-    // Second row: waveform selector + bypass
+    // Second row: waveform selector + DRIVE knob (no bypass anymore).
     const int rowY = knobY + knobSize + labelH + 14;
     const int comboW = 120, comboH = 24;
     waveformCombo.setBounds (bounds.getX(), rowY, comboW, comboH);
     waveformLabel.setBounds (bounds.getX(), rowY + comboH, comboW, labelH);
+    distortionSlider.setBounds (bounds.getX() + comboW + 16, rowY - 6, 56, 56);
+    distortionLabel.setBounds (bounds.getX() + comboW + 16, rowY + 52, 56, labelH);
 
-    bypassButton.setBounds (bounds.getRight() - 80, rowY, 80, comboH);
+    // Preset dropdown row (full width): built-in 303 patterns.
+    const int presetY = rowY + comboH + 8;
+    presetCombo.setBounds (bounds.getX(), presetY, bounds.getWidth(), comboH);
 
-    // Sequencer row (Phase 1): Run toggle + Tempo knob, placed to the right
-    // of the waveform combo.
+    // Sequencer row: Run toggle + Tempo knob, to the right of the waveform combo.
     const int seqX = bounds.getX() + comboW + 16;
-    seqRunButton.setBounds (seqX, rowY, 70, comboH);
-    seqTempoSlider.setBounds (seqX + 80, rowY - 6, 64, 64);
+    seqRunButton.setBounds (seqX, presetY, 70, comboH);
+    seqTempoSlider.setBounds (seqX + 80, presetY - 6, 56, 56);
 
-    // A/B + Random + Clear, below the sequencer row.
-    const int gridY = rowY + comboH + 10;
+    // A/B + Random + Clear, below the preset row.
+    const int gridY = presetY + comboH + 10;
     abButton.setBounds (bounds.getX(), gridY, 70, comboH);
     randomButton.setBounds (bounds.getX() + 80, gridY, 70, comboH);
     clearButton.setBounds  (bounds.getX() + 160, gridY, 70, comboH);
