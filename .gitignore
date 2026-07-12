@@ -36,3 +36,11 @@ build/*.exe
 voice_test.log
 build/voice_test.exe
 build/voice_test.obj
+
+# blep test artifacts
+blep_test.log
+blep_dbg.log
+build/blep_test.exe
+build/blep_test.obj
+build/blep_dbg.exe
+build/blep_dbg.obj

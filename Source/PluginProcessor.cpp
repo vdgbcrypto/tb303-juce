@@ -99,6 +99,23 @@ void TB303Processor::updateFilterCoefficients ()
     mStage2.q = mDamping;
 }
 
+double TB303Processor::polyBlep (double t, double dt)
+{
+    // Canonical polyBlep (Tale / Martin Finke, Part 18). t in [0,1), dt=freq/sr.
+    // Returns the band-limiting ripple to layer on a step discontinuity.
+    if (t < dt)
+    {
+        double u = t / dt;
+        return u + u - u * u - 1.0;
+    }
+    else if (t > 1.0 - dt)
+    {
+        double u = (t - 1.0) / dt;
+        return u * u + u + u + 1.0;
+    }
+    return 0.0;
+}
+
 double TB303Processor::cutoffFromKnob (double t)
 {
     // TB-303 VCF: 24 dB/oct 4-pole ladder. Range ~18 Hz .. ~18 kHz with an
@@ -298,10 +315,17 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
         mPhase += (freq * 2.0 * juce::MathConstants<double>::pi) / mSampleRate;
         if (mPhase > 2.0 * juce::MathConstants<double>::pi) mPhase -= 2.0 * juce::MathConstants<double>::pi;
 
-        // Waveform: 0=saw, 1=square (full +/-1), 2=saw+square mix.
-        double saw = (mPhase / juce::MathConstants<double>::pi) - 1.0;       // -1..1
-        double sq  = (mPhase < juce::MathConstants<double>::pi) ? 1.0 : -1.0; // +/-1
-        double osc = (mWaveform == 1) ? sq : (mWaveform == 2 ? saw * 0.5 + sq * 0.5 : saw);
+        // Band-limited oscillator via polyBLEP. t in [0,1), dt = freq/sr.
+        double dt = freq / mSampleRate;
+        double t = mPhase / (2.0 * juce::MathConstants<double>::pi);
+        // Naive waveforms then correct the discontinuities.
+        double saw = 2.0 * t - 1.0;                                   // -1..1
+        double sq  = (t < 0.5) ? 1.0 : -1.0;                          // +/-1
+        double sqPhase = t + 0.5;
+        if (sqPhase >= 1.0) sqPhase -= 1.0;                           // wrap for 2nd edge
+        double sawBL = saw - polyBlep (t, dt);                        // BLEP saw
+        double sqBL  = sq - polyBlep (t, dt) + polyBlep (sqPhase, dt); // BLEP square
+        double osc = (mWaveform == 1) ? sqBL : (mWaveform == 2 ? sawBL * 0.5 + sqBL * 0.5 : sawBL);
 
         // Filter (2 cascaded SVF stages)
         double filtered = processFilterStage (osc, 0);

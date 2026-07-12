@@ -51,6 +51,9 @@ private:
     double processFilterStage (double x, int stage);
     void updateFilterCoefficients ();
     double cutoffFromKnob (double t);
+    // PolyBLEP band-limiting: corrects oscillator step discontinuities (square
+    // edges, saw ramp) to kill aliasing. t in [0,1), dt = freq/sampleRate.
+    static double polyBlep (double t, double dt);
     void reset ();
     void updateSmoothing (double sampleRate);
     

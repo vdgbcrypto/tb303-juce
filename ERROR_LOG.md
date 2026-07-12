@@ -62,6 +62,20 @@ stays 1 while >=1 note held, so the shared AD envelope does NOT retrigger on
 legato note changes (only on 0->1 gate). Per-note portamento glides pitch
 (mPortaFreq += (target-porta)*coeff) per sample. Accent is per-note = knob*velocity.
 
+### L8 — BLEP: verify aliasing with FFT, not peak-delta; use canonical formula
+Error: when adding polyBlep band-limiting to the square/saw, a naive
+"peak sample-to-sample jump" test gives a FALSE NEGATIVE — polyBlep correctly
+concentrates the correction in 1-2 samples, so the peak delta stays ~2.0 even
+when aliasing is fixed. Also, hand-rewriting Finke's polyBlep algebra produced
+a wrong-shaped bump (square peaked at 3.0 instead of rounding).
+Prevention: (1) Use the CANONICAL polyBlep verbatim (Tale/Finke):
+  if(t<dt){u=t/dt; return u+u-u*u-1.0;} else if(t>1-dt){u=(t-1)/dt; return u*u+u+u+1.0;}
+  square = sq + polyBlep(t,dt) - polyBlep(fmod(t+0.5,1),dt)  (coefficient 1).
+(2) Verify with a REAL FFT measuring energy in the alias band of a HIGH note
+(e.g. 9kHz): naïve square vs BLEP should show ~95% alias-energy reduction.
+Peak-delta is NOT a valid band-limiting metric.
+
+
 ---
 
 ## Standing environment facts (persist across sessions)
