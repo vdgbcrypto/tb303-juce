@@ -27,3 +27,7 @@ build/selfosc_test.exe
 build/selfosc_test.obj
 reso_test.log
 selfosc_test.log
+
+# all dsp_test build artifacts
+*.obj
+build/*.exe
