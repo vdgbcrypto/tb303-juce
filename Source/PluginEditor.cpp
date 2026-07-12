@@ -52,6 +52,15 @@ TB303Editor::TB303Editor (TB303Processor& p)
     addAndMakeVisible (bypassButton);
     bypassButton.setButtonText ("Bypass");
 
+    // Sequencer (Phase 1): Run toggle + Tempo knob.
+    addAndMakeVisible (seqRunButton);
+    seqRunButton.setButtonText ("SEQ Run");
+    seqTempoSlider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
+    seqTempoSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 46, 16);
+    seqTempoSlider.setRange (40.0, 240.0, 1.0);
+    seqTempoSlider.setColour (juce::Slider::rotarySliderFillColourId, green);
+    addAndMakeVisible (seqTempoSlider);
+
     cutoffAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
         processor.apvts, "cutoff", cutoffSlider);
     resonanceAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
@@ -70,6 +79,10 @@ TB303Editor::TB303Editor (TB303Processor& p)
         processor.apvts, "waveform", waveformCombo);
     bypassAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
         processor.apvts, "bypass", bypassButton);
+    seqRunAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
+        processor.apvts, "seqrun", seqRunButton);
+    seqTempoAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
+        processor.apvts, "seqtempo", seqTempoSlider);
 }
 
 TB303Editor::~TB303Editor() {}
@@ -127,4 +140,10 @@ void TB303Editor::resized()
     waveformLabel.setBounds (bounds.getX(), rowY + comboH, comboW, labelH);
 
     bypassButton.setBounds (bounds.getRight() - 80, rowY, 80, comboH);
+
+    // Sequencer row (Phase 1): Run toggle + Tempo knob, placed to the right
+    // of the waveform combo.
+    const int seqX = bounds.getX() + comboW + 16;
+    seqRunButton.setBounds (seqX, rowY, 70, comboH);
+    seqTempoSlider.setBounds (seqX + 80, rowY - 6, 64, 64);
 }

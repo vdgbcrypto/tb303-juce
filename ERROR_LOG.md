@@ -62,6 +62,25 @@ stays 1 while >=1 note held, so the shared AD envelope does NOT retrigger on
 legato note changes (only on 0->1 gate). Per-note portamento glides pitch
 (mPortaFreq += (target-porta)*coeff) per sample. Accent is per-note = knob*velocity.
 
+### L9 — Sequencer: lock-free copy, slides = omitted note-off, sample-accurate clock
+Error: a step sequencer must drive the voice WITHOUT allocating on the audio
+thread, and SLIDE must be legato (glide + no envelope retrigger), not a retriggered
+note. Sub-block step boundaries must land at the exact sample (no block-quantised drift).
+Prevention: (1) Pattern (16 Steps, fixed-size, no heap). TRUE LOCK-FREE
+DOUBLE BUFFER: UI thread edits mEditPattern then commitPattern() copies it into
+mCommittedPattern and swaps the atomic mActivePattern pointer. The audio
+thread reads mActivePattern.load() ONCE per block (no lock, no copy of
+contents) -> race-free + allocation-free (L7). Do NOT copy Pattern into a
+stack local under a lock (that was the wrong first attempt). (2) SLIDE: if a step has slide=true, OMIT its note-off so the
+next step's note-on is legato (voice glides pitch, shared AD envelope does not
+retrigger). (3) Clock: samplesPerStep = (60/bpm)/4 * sr (16th note); advance
+mSeqSamplePos per sub-block slice; place note-on/off at the exact blockPos
+sample. Verified: step spacing error = 0.00 samples. (4) REST (on=false) = no
+note-on (silence). (5) On STOP, do NOT leave a stuck note — next processBlock
+with seq off stops emitting; ensure any held note is released (the voice's own
+note-off / all-notes-off path handles it).
+
+
 ### L8 — BLEP: verify aliasing with FFT, not peak-delta; use canonical formula
 Error: when adding polyBlep band-limiting to the square/saw, a naive
 "peak sample-to-sample jump" test gives a FALSE NEGATIVE — polyBlep correctly

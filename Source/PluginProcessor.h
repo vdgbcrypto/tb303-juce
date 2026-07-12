@@ -42,6 +42,42 @@ public:
     double mAccentAmount {0.0};   // per-note accent = knob * velocity (0..1)
     int mWaveform {0};            // 0=saw, 1=square, 2=saw+square
 
+    // ---- Sequencer (branch feature/sequencer) ----
+    struct Step
+    {
+        int  note   {36};   // MIDI note (C2 default); -1 = rest
+        bool on     {true}; // rhythm gate (false = rest for that step)
+        bool slide  {false};// glide into next step (legato, no retrigger)
+        bool accent {false};// per-step accent (velocity boost + filter open)
+    };
+    struct Pattern
+    {
+        Step  steps[16];
+        int   length {16};
+        double bpm  {120.0};
+    };
+    // Lock-free DOUBLE BUFFER: UI thread edits mEditPattern, then commitPattern()
+    // swaps the atomic pointer. Audio thread reads the pointer ONCE per block
+    // (no lock, no copy of contents) -> no heap, no race (L7/L9).
+    Pattern mEditPattern;        // UI-owned, edited then committed
+    Pattern mCommittedPattern;    // the live copy the pointer points at
+    std::atomic<Pattern*> mActivePattern {nullptr};
+    // Pre-sized member MidiBuffers: clear()'d each block, never re-alloc'd
+    // in processBlock (L7).
+    juce::MidiBuffer mSeqMidi, mMergeMidi;
+    bool mSeqRunning {false};
+    int  mSeqStepIndex {0};
+    long long mSeqSamplePos {0};   // samples since current step started
+    double mSeqSamplesPerStep {0.0};
+    // Per-step note scheduling: track which step is currently sounding so we
+    // can emit note-off at the right sample (unless slide -> carry to next).
+    int  mSeqCurrentStepPlaying {-1};
+
+    // UI calls these to edit + publish the pattern (Phase 2 grid editor).
+    void commitPattern() { mCommittedPattern = mEditPattern; mActivePattern.store (&mCommittedPattern); }
+    const Pattern& getPattern() const { return mEditPattern; }
+    Pattern& editPattern() { return mEditPattern; }
+
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     

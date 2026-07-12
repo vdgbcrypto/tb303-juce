@@ -23,6 +23,8 @@ private:
     juce::Slider tuneSlider;
     juce::ComboBox waveformCombo;
     juce::ToggleButton bypassButton;
+    juce::ToggleButton seqRunButton;
+    juce::Slider seqTempoSlider;
 
     juce::Label cutoffLabel;
     juce::Label resonanceLabel;
@@ -42,6 +44,8 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> tuneAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> waveformAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bypassAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> seqRunAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> seqTempoAttachment;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TB303Editor)
 };

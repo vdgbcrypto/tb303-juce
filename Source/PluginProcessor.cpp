@@ -26,6 +26,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout TB303Processor::createParame
         juce::ParameterID {"waveform", 1}, "Waveform", waveChoices, 0));
     params.push_back(std::make_unique<juce::AudioParameterBool>(
         juce::ParameterID {"bypass", 1}, "Bypass", false));
+    params.push_back(std::make_unique<juce::AudioParameterBool>(
+        juce::ParameterID {"seqrun", 1}, "Sequencer Run", false));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID {"seqtempo", 1}, "Tempo", 40.0f, 240.0f, 120.0f));
     return { params.begin(), params.end() };
 }
 
@@ -33,6 +37,23 @@ TB303Processor::TB303Processor()
     : juce::AudioProcessor (BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "Parameters", createParameterLayout())
 {
+    // Default acid pattern so the sequencer is audible on first RUN.
+    // Classic 16-step: notes (MIDI), with a couple of slides + accents.
+    static const int notes[16] = { 36, 36, 48, 36, 43, 36, 48, 36,
+                                   36, 36, 43, 36, 48, 36, 36, 36 };
+    static const bool slide[16] = { 0,0,1,0,0,0,1,0, 0,0,0,0,1,0,0,0 };
+    static const bool accent[16]= { 1,0,0,0,1,0,0,0, 1,0,0,0,0,0,0,0 };
+    for (int i = 0; i < 16; ++i)
+    {
+        mCommittedPattern.steps[i].note   = notes[i];
+        mCommittedPattern.steps[i].on     = true;
+        mCommittedPattern.steps[i].slide  = slide[i];
+        mCommittedPattern.steps[i].accent = accent[i];
+    }
+    mCommittedPattern.length = 16;
+    mCommittedPattern.bpm    = 120.0;
+    mEditPattern = mCommittedPattern;
+    mActivePattern.store (&mCommittedPattern); // audio thread reads this
     reset();
 }
 
@@ -45,6 +66,10 @@ void TB303Processor::prepareToPlay (double sampleRate, int samplesPerBlock)
     // Fixed mono portamento (303 slide feel); per-sample glide in processBlock.
     const double portaTime = 0.006; // seconds
     mPortaCoeff = 1.0 - std::exp (-1.0 / (portaTime * sampleRate));
+    // Pre-size sequencer MidiBuffers once (clear() each block reuses capacity,
+    // so processBlock never allocates -> no heap on the audio thread (L7/L9).
+    mSeqMidi.ensureSize (512);
+    mMergeMidi.ensureSize (4096);
     reset();
 }
 
@@ -187,6 +212,87 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
     auto tuneParam = apvts.getRawParameterValue ("tune");
     auto waveformParam = apvts.getRawParameterValue ("waveform");
     auto bypassParam = apvts.getRawParameterValue ("bypass");
+    auto seqRunParam = apvts.getRawParameterValue ("seqrun");
+    auto seqTempoParam = apvts.getRawParameterValue ("seqtempo");
+
+    const int numSamples = buffer.getNumSamples();
+
+    // ---- Sequencer (branch feature/sequencer, Phase 1) ----
+    // Member MidiBuffers (mSeqMidi / mMergeMidi) are pre-sized in
+    // prepareToPlay and clear()'d each block -> NO heap alloc in processBlock (L7).
+    mSeqMidi.clear();
+    mMergeMidi.clear();
+    bool seqRunningNow = (seqRunParam->load() > 0.5f);
+    double seqBpm = (double) seqTempoParam->load();
+
+    // Lock-free double-buffer: atomic pointer swap in commitPattern() (UI thread).
+    // Audio thread reads the pointer ONCE per block, no lock, no copy of contents.
+    if (seqRunningNow != mSeqRunning)
+    {
+        mSeqRunning = seqRunningNow;
+        if (mSeqRunning)
+        {
+            mSeqStepIndex = 0; mSeqSamplePos = 0; mSeqCurrentStepPlaying = -1;
+        }
+        else
+        {
+            // STOP: kill any sounding note (incl. slid/ghost) via all-notes-off,
+            // and reset sequencer state so a fresh RUN starts clean.
+            mSeqMidi.addEvent (juce::MidiMessage::allNotesOff (1), 0);
+            mSeqCurrentStepPlaying = -1;
+        }
+    }
+
+    const Pattern* pat = mActivePattern.load();
+    if (mSeqRunning && pat != nullptr && pat->length >= 1)
+    {
+        double samplesPerStep = (60.0 / seqBpm) / 4.0 * mSampleRate; // 16th note
+        int remaining = numSamples;
+        int blockPos = 0;
+        while (remaining > 0)
+        {
+            int step = mSeqStepIndex % pat->length;
+            const Step& s = pat->steps[step];
+            if (mSeqCurrentStepPlaying != step)
+            {
+                int atSample = blockPos;
+                // Note-off the previously playing step, UNLESS it's a legato slide
+                // carrying into a REAL next note (slide->rest must still release).
+                if (mSeqCurrentStepPlaying >= 0)
+                {
+                    const Step& prev = pat->steps[mSeqCurrentStepPlaying];
+                    bool nextIsReal = (s.on && s.note >= 0);
+                    bool carryLegato = prev.slide && nextIsReal;
+                    if (!carryLegato)
+                        mSeqMidi.addEvent (juce::MidiMessage::noteOff (1, prev.note, 0.0f), atSample);
+                }
+                if (s.on && s.note >= 0)
+                {
+                    uint8 vel = s.accent ? (uint8) 127 : (uint8) 90;
+                    mSeqMidi.addEvent (juce::MidiMessage::noteOn (1, s.note, vel), atSample);
+                    mSeqCurrentStepPlaying = step;
+                }
+                else
+                {
+                    mSeqCurrentStepPlaying = -1; // rest step: silent
+                }
+            }
+            // Advance the clock by the slice up to the end of this step.
+            long long untilStepEnd = (long long) std::ceil (samplesPerStep - (double) mSeqSamplePos);
+            int stepDur = (int) juce::jmin ((long long) remaining, untilStepEnd);
+            mSeqSamplePos += stepDur;
+            remaining -= stepDur;
+            blockPos += stepDur;
+            if (mSeqSamplePos >= samplesPerStep - 0.5)
+            {
+                mSeqSamplePos -= samplesPerStep;
+                mSeqStepIndex++;
+            }
+        }
+    }
+    // Merge sequencer events + host events into one buffer for the voice.
+    mMergeMidi.addEvents (mSeqMidi, 0, numSamples, 0);
+    mMergeMidi.addEvents (midiMessages, 0, numSamples, 0);
 
     if (mBypass)
     {
@@ -197,12 +303,10 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
     auto* left = buffer.getWritePointer (0);
     auto* right = buffer.getWritePointer (1);
 
-    const int numSamples = buffer.getNumSamples();
-
     // Sample-accurate MIDI scheduling: process note events at their real position
     // inside the block so notes trigger immediately instead of waiting for the
     // next processBlock() (removes the perceived "laggy" note response).
-    juce::MidiBuffer::Iterator midiIt (midiMessages);
+    juce::MidiBuffer::Iterator midiIt (mMergeMidi);
     juce::MidiMessage midiMsg;
     int midiPos = 0;
     bool hasEvent = midiIt.getNextEvent (midiMsg, midiPos);
