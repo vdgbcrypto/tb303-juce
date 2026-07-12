@@ -23,6 +23,14 @@ private:
     juce::Slider tuneSlider;
     juce::ToggleButton bypassButton;
 
+    juce::Label cutoffLabel;
+    juce::Label resonanceLabel;
+    juce::Label envModLabel;
+    juce::Label decayLabel;
+    juce::Label accentLabel;
+    juce::Label volumeLabel;
+    juce::Label tuneLabel;
+
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> cutoffAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> resonanceAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> envModAttachment;

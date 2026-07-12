@@ -157,22 +157,6 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
 
     updateFilterCoefficients();
 
-    int noteGate = 0;
-    for (const auto metadata : midiMessages)
-    {
-        auto message = metadata.getMessage();
-        if (message.isNoteOn())
-        {
-            noteFrequency = juce::MidiMessage::getMidiNoteInHertz (message.getNoteNumber());
-            activeLevel = 1.0f;
-            noteGate = 1;
-        }
-        else if (message.isNoteOff())
-        {
-            activeLevel = 0.0f;
-        }
-    }
-
     if (mBypass)
     {
         // Buffer was already cleared above; bypass silences output for this instrument.
@@ -181,25 +165,60 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
 
     auto* left = buffer.getWritePointer (0);
     auto* right = buffer.getWritePointer (1);
-    double tune = 0.5 + mSmoothedTune;
-    float currentVolume = mSmoothedVolume;
+    const double freqMul = std::pow (2.0, mSmoothedTune - 0.5); // hoisted out of the sample loop
+    const float currentVolume = mSmoothedVolume;
 
-    for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+    const int numSamples = buffer.getNumSamples();
+
+    // Sample-accurate MIDI scheduling: process note events at their real position
+    // inside the block so notes trigger immediately instead of waiting for the
+    // next processBlock() (removes the perceived "laggy" note response).
+    juce::MidiBuffer::Iterator midiIt (midiMessages);
+    juce::MidiMessage midiMsg;
+    int midiPos = 0;
+    bool hasEvent = midiIt.getNextEvent (midiMsg, midiPos);
+
+    int sample = 0;
+    while (sample < numSamples)
     {
+        while (hasEvent && midiPos == sample)
+        {
+            if (midiMsg.isNoteOn())
+            {
+                noteFrequency = juce::MidiMessage::getMidiNoteInHertz (midiMsg.getNoteNumber());
+                activeLevel = 1.0f;
+                mNoteOn = true;
+            }
+            else if (midiMsg.isNoteOff())
+            {
+                activeLevel = 0.0f;
+                mNoteOn = false;
+            }
+            else if (midiMsg.isAllNotesOff() || midiMsg.isAllSoundOff())
+            {
+                activeLevel = 0.0f;
+                mNoteOn = false;
+            }
+
+            hasEvent = midiIt.getNextEvent (midiMsg, midiPos);
+        }
+
+        const int noteGate = mNoteOn ? 1 : 0;
+
         // Simple oscillator
-        double freq = noteFrequency * std::pow (2.0, tune - 0.5);
+        double freq = noteFrequency * freqMul;
         mPhase += (freq * 2.0 * juce::MathConstants<double>::pi) / mSampleRate;
         if (mPhase > 2.0 * juce::MathConstants<double>::pi) mPhase -= 2.0 * juce::MathConstants<double>::pi;
-        
+
         double saw = (mPhase / juce::MathConstants<double>::pi) - 1.0;
         double sq = (mPhase < juce::MathConstants<double>::pi) ? 0.7 : -0.7;
         double osc = (saw * 0.6 + sq * 0.4) * activeLevel;
 
-        // Filter
+        // Filter (2 cascaded SVF stages)
         double filtered = processFilterStage (osc, 0);
         filtered = processFilterStage (filtered, 1);
 
-        // Envelope
+        // Envelope + drive + output
         double env = envelopeStep (noteGate);
         double accented = env + mSmoothedAccent * 0.3;
         double driven = driveSignal (filtered * accented * 1.2, mSmoothedAccent * 0.5);
@@ -207,6 +226,8 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
 
         left[sample] = (float) out;
         right[sample] = (float) out;
+
+        ++sample;
     }
 }
 
