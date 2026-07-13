@@ -15,7 +15,7 @@ concurrency:
 jobs:
   build-vst3:
     name: Build VST3 (Windows / MSVC)
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - name: Checkout plugin source
         uses: actions/checkout@v4
@@ -24,19 +24,13 @@ jobs:
         run: |
           git clone --depth 1 --branch 8.0.14 https://github.com/juce-framework/JUCE.git JUCE
 
-      - name: Set up MSVC (cl.exe) + Ninja environment
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
-      - name: Configure + Build VST3 (Ninja, MSVC x64)
-        shell: cmd
+      - name: Configure (CMake, VS2022 x64)
         run: |
-          cmake -B build -S . -G Ninja ^
-            -DCMAKE_BUILD_TYPE=Release ^
-            -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DCMAKE_RC_COMPILER=rc ^
-            -DJUCE_DIR="%GITHUB_WORKSPACE%/JUCE" || exit /b 1
-          cmake --build build --config Release --target TB303VSTi_VST3 || exit /b 1
+          cmake -B build -S . -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release -DJUCE_DIR="${{ github.workspace }}/JUCE"
+
+      - name: Build VST3 (Release)
+        run: |
+          cmake --build build --config Release --target TB303VSTi_VST3
 
       - name: Locate built .vst3
         id: vst3
