@@ -268,13 +268,14 @@ void TB303Editor::resized()
     seqTempoSlider.setBounds  (c0 + cGap + 172,  rowY - 6, 56, 56);
     seqTempoLabel.setBounds   (c0 + cGap + 172,  rowY + 52, 56, labelH);
 
-    // A/B + Random + Clear (sequencer action row).
-    const int seqY = rowY + comboH + 12;
+    // A/B + Random + Clear (sequencer action row). Pushed well below the knob
+    // band so the buttons never overlap the DRIVE/SWING/TEMPO readouts.
+    const int seqY = rowY + 78;
     abButton.setBounds (bounds.getX(),       seqY, 70, comboH);
     randomButton.setBounds (bounds.getX() + 80,  seqY, 70, comboH);
     clearButton.setBounds  (bounds.getX() + 160, seqY, 70, comboH);
 
-    // Preset dropdown: UNDER the sequencer section (full width).
+    // Preset dropdown: directly ABOVE the 16-step grid (where the arrow points).
     const int presetY = seqY + comboH + 12;
     presetCombo.setBounds (bounds.getX(), presetY, bounds.getWidth(), comboH);
 
