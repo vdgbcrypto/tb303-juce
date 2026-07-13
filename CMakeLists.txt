@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.15)
 project(TB303VSTi VERSION 0.1.0 LANGUAGES CXX)
 
-set(JUCE_DIR "C:/JUCE")
+set(JUCE_DIR "C:/JUCE" CACHE PATH "Path to the JUCE framework (override with -DJUCE_DIR=...)")
 
 add_subdirectory(${JUCE_DIR} JUCE)
 
