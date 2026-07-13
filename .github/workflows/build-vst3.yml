@@ -29,13 +29,14 @@ jobs:
         with:
           arch: x64
 
-      - name: Configure (CMake, Ninja, MSVC x64)
+      - name: Configure + Build VST3 (Ninja, MSVC x64)
+        shell: cmd
         run: |
-          cmake -B build -S . -G Ninja -DCMAKE_BUILD_TYPE=Release -DJUCE_DIR="${{ github.workspace }}/JUCE"
-
-      - name: Build VST3 (Release)
-        run: |
-          cmake --build build --config Release --target TB303VSTi_VST3
+          cmake -B build -S . -G Ninja ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DCMAKE_RC_COMPILER=rc ^
+            -DJUCE_DIR="%GITHUB_WORKSPACE%/JUCE" || exit /b 1
+          cmake --build build --config Release --target TB303VSTi_VST3 || exit /b 1
 
       - name: Locate built .vst3
         id: vst3
