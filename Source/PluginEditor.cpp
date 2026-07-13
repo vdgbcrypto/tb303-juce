@@ -81,6 +81,11 @@ TB303Editor::TB303Editor (TB303Processor& p)
     seqTempoSlider.setRange (40.0, 240.0, 1.0);
     seqTempoSlider.setColour (juce::Slider::rotarySliderFillColourId, green);
     addAndMakeVisible (seqTempoSlider);
+    seqTempoLabel.setText ("TEMPO", juce::dontSendNotification);
+    seqTempoLabel.setJustificationType (juce::Justification::centred);
+    seqTempoLabel.setColour (juce::Label::textColourId, green);
+    seqTempoLabel.setFont (juce::Font (12.0f, juce::Font::bold));
+    addAndMakeVisible (seqTempoLabel);
 
     // ---- Sequencer grid (Phase 2) ----
     const juce::Colour noteCol (0xff66ccff);
@@ -247,33 +252,34 @@ void TB303Editor::resized()
     tuneSlider.setBounds (x, knobY, knobSize, knobSize);
     tuneLabel.setBounds (x, knobY + knobSize, knobSize, labelH);
 
-    // Second row: waveform selector + DRIVE knob (no bypass anymore).
+    // Second row: waveform selector + DRIVE / Run / SWING / Tempo, spaced out.
     const int rowY = knobY + knobSize + labelH + 14;
     const int comboW = 120, comboH = 24;
     waveformCombo.setBounds (bounds.getX(), rowY, comboW, comboH);
     waveformLabel.setBounds (bounds.getX(), rowY + comboH, comboW, labelH);
-    distortionSlider.setBounds (bounds.getX() + comboW + 16, rowY - 6, 56, 56);
-    distortionLabel.setBounds (bounds.getX() + comboW + 16, rowY + 52, 56, labelH);
-    swingSlider.setBounds (bounds.getX() + comboW + 80, rowY - 6, 56, 56);
-    swingLabel.setBounds (bounds.getX() + comboW + 80, rowY + 52, 56, labelH);
+    // Spread the small controls with comfortable horizontal padding.
+    const int c0 = bounds.getX() + comboW + 30;   // start of the control cluster
+    const int cGap = 86;                            // horizontal padding between controls
+    distortionSlider.setBounds (c0,               rowY - 6, 56, 56);
+    distortionLabel.setBounds (c0,               rowY + 52, 56, labelH);
+    seqRunButton.setBounds    (c0 + cGap,        rowY,     70, comboH);
+    swingSlider.setBounds     (c0 + cGap + 86,   rowY - 6, 56, 56);
+    swingLabel.setBounds      (c0 + cGap + 86,   rowY + 52, 56, labelH);
+    seqTempoSlider.setBounds  (c0 + cGap + 172,  rowY - 6, 56, 56);
+    seqTempoLabel.setBounds   (c0 + cGap + 172,  rowY + 52, 56, labelH);
 
-    // Sequencer row: Run toggle + Tempo knob (directly under waveform/DRIVE).
-    const int seqY = rowY + comboH + 8;
-    const int seqX = bounds.getX() + comboW + 16;
-    seqRunButton.setBounds (seqX, seqY, 70, comboH);
-    seqTempoSlider.setBounds (seqX + 80, seqY - 6, 56, 56);
+    // A/B + Random + Clear (sequencer action row).
+    const int seqY = rowY + comboH + 12;
+    abButton.setBounds (bounds.getX(),       seqY, 70, comboH);
+    randomButton.setBounds (bounds.getX() + 80,  seqY, 70, comboH);
+    clearButton.setBounds  (bounds.getX() + 160, seqY, 70, comboH);
 
     // Preset dropdown: UNDER the sequencer section (full width).
-    const int presetY = seqY + comboH + 8;
+    const int presetY = seqY + comboH + 12;
     presetCombo.setBounds (bounds.getX(), presetY, bounds.getWidth(), comboH);
 
-    // A/B + Random + Clear, below the preset dropdown.
-    const int gridY = presetY + comboH + 10;
-    abButton.setBounds (bounds.getX(), gridY, 70, comboH);
-    randomButton.setBounds (bounds.getX() + 80, gridY, 70, comboH);
-    clearButton.setBounds  (bounds.getX() + 160, gridY, 70, comboH);
-
     // 16-step grid: a note slider + On/Slide/Accent toggles per step.
+    const int gridY = presetY + comboH + 12;
     const int stepW = 34, stepGap = 2, stepStride = stepW + stepGap;
     const int gridX = bounds.getX();
     const int noteH = 70, togH = 16, togGap = 2;

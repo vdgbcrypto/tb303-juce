@@ -25,6 +25,7 @@ private:
     juce::ComboBox waveformCombo;
     juce::ToggleButton seqRunButton;
     juce::Slider seqTempoSlider;
+    juce::Label seqTempoLabel;       // "TEMPO" caption for the seq tempo knob
     juce::ComboBox presetCombo;        // built-in 303 pattern presets (60)
     juce::Slider distortionSlider;     // distortion amount 0..1
     juce::Slider swingSlider;          // swing amount 0..0.6
