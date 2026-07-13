@@ -23,10 +23,12 @@ private:
     juce::Slider volumeSlider;
     juce::Slider tuneSlider;
     juce::ComboBox waveformCombo;
+    juce::Label syncLabel;          // "SYNC" caption for the sync dropdown
     juce::ToggleButton seqRunButton;
     juce::Slider seqTempoSlider;
     juce::Label seqTempoLabel;       // "TEMPO" caption for the seq tempo knob
     juce::ComboBox presetCombo;        // built-in 303 pattern presets (60)
+    juce::ComboBox syncCombo;          // Sync: Off / MIDI Clock / DAW
     juce::Slider distortionSlider;     // distortion amount 0..1
     juce::Slider swingSlider;          // swing amount 0..0.6
     juce::ToggleButton abButton;        // A/B pattern select
@@ -62,6 +64,7 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> seqRunAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> seqTempoAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> presetAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> syncAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> distortionAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> swingAttachment;
 

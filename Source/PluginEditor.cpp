@@ -49,6 +49,12 @@ TB303Editor::TB303Editor (TB303Processor& p)
     waveformLabel.setFont (juce::Font (12.0f, juce::Font::bold));
     addAndMakeVisible (waveformLabel);
 
+    syncLabel.setText ("SYNC", juce::dontSendNotification);
+    syncLabel.setJustificationType (juce::Justification::centred);
+    syncLabel.setColour (juce::Label::textColourId, green);
+    syncLabel.setFont (juce::Font (12.0f, juce::Font::bold));
+    addAndMakeVisible (syncLabel);
+
     // Distortion knob (manual, placed in the sequencer row, not the 7-knob row).
     distortionSlider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
     distortionSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 46, 16);
@@ -174,6 +180,12 @@ TB303Editor::TB303Editor (TB303Processor& p)
         refreshGrid();   // show the loaded pattern in the grid
     };
     addAndMakeVisible (presetCombo);
+    // Sync source dropdown: Off / MIDI Clock / DAW.
+    syncCombo.addItem ("Off", 1);
+    syncCombo.addItem ("MIDI Clock", 2);
+    syncCombo.addItem ("DAW", 3);
+    syncCombo.setSelectedItemIndex (0, juce::dontSendNotification);
+    addAndMakeVisible (syncCombo);
     // Distortion knob.
     distortionSlider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
     distortionSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 46, 16);
@@ -186,6 +198,8 @@ TB303Editor::TB303Editor (TB303Processor& p)
         processor.apvts, "seqtempo", seqTempoSlider);
     presetAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(
         processor.apvts, "preset", presetCombo);
+    syncAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(
+        processor.apvts, "sync", syncCombo);
     distortionAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
         processor.apvts, "distortion", distortionSlider);
     swingAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
@@ -257,6 +271,8 @@ void TB303Editor::resized()
     const int comboW = 120, comboH = 24;
     waveformCombo.setBounds (bounds.getX(), rowY, comboW, comboH);
     waveformLabel.setBounds (bounds.getX(), rowY + comboH, comboW, labelH);
+    syncCombo.setBounds (bounds.getX(), rowY + comboH + labelH + 4, comboW, comboH);
+    syncLabel.setBounds (bounds.getX(), rowY + comboH + labelH + 4 + comboH, comboW, labelH);
     // Spread the small controls with comfortable horizontal padding.
     const int c0 = bounds.getX() + comboW + 30;   // start of the control cluster
     const int cGap = 86;                            // horizontal padding between controls
@@ -268,9 +284,9 @@ void TB303Editor::resized()
     seqTempoSlider.setBounds  (c0 + cGap + 172,  rowY - 6, 56, 56);
     seqTempoLabel.setBounds   (c0 + cGap + 172,  rowY + 52, 56, labelH);
 
-    // A/B + Random + Clear (sequencer action row). Pushed well below the knob
-    // band so the buttons never overlap the DRIVE/SWING/TEMPO readouts.
-    const int seqY = rowY + 78;
+    // A/B + Random + Clear (sequencer action row). Pushed below the SYNC label
+    // (rowY+88 bottom) so the buttons never overlap the SYNC caption.
+    const int seqY = rowY + 96;
     abButton.setBounds (bounds.getX(),       seqY, 70, comboH);
     randomButton.setBounds (bounds.getX() + 80,  seqY, 70, comboH);
     clearButton.setBounds  (bounds.getX() + 160, seqY, 70, comboH);

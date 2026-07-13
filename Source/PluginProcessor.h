@@ -83,9 +83,16 @@ public:
     int  mClockTicks[64];         // sample positions of 0xF8 in the current block
     int  mClockTickCount {0};     // number of valid entries in mClockTicks
 
+    // DAW sync (AudioPlayHead): phase-lock the 16 steps to the host transport.
+    bool mDawPlaying {false};     // host is playing (from AudioPlayHead)
+    double mHostBpm {120.0};      // host tempo reported by AudioPlayHead
+    int64 mHostPos {0};           // host PPQ position at block start (16.16 fixed)
+    bool mDawSync {false};         // "Sync" param == DAW (not Off / MIDI Clock)
+    bool mDawSlaved {false};       // sticky: DAW engaged this run (so Stop stays silent)
+
     // Emit the note-on/off for the current step at sample position `atSample`.
     // Handles slide->rest release + mSeqCurrentNote snapshot (L11). Shared by
-    // the internal timer and the host-MIDI-clock slave path.
+    // the internal timer, the MIDI-clock slave, and the DAW-sync path.
     void emitStep (int stepGlobal, int atSample, const Pattern& pat, juce::MidiBuffer& out);
 
     // UI calls these to edit + publish the pattern (grid editor, Phase 2).

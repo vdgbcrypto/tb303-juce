@@ -40,6 +40,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout TB303Processor::createParame
         juce::ParameterID {"seqrun", 1}, "Sequencer Run", false));
     params.push_back(std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID {"seqtempo", 1}, "Tempo", 40.0f, 240.0f, 120.0f));
+    juce::StringArray syncChoices;
+    syncChoices.add ("Off");        // internal tempo only
+    syncChoices.add ("MIDI Clock");  // slave to host MIDI clock (0xF8)
+    syncChoices.add ("DAW");         // phase-lock to host transport (AudioPlayHead)
+    params.push_back(std::make_unique<juce::AudioParameterChoice>(
+        juce::ParameterID {"sync", 1}, "Sync", syncChoices, 0));
     return { params.begin(), params.end() };
 }
 
@@ -284,6 +290,7 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
     auto seqRunParam = apvts.getRawParameterValue ("seqrun");
     auto seqTempoParam = apvts.getRawParameterValue ("seqtempo");
     auto swingParam = apvts.getRawParameterValue ("swing");
+    auto syncParam = apvts.getRawParameterValue ("sync");
 
     const int numSamples = buffer.getNumSamples();
 
@@ -318,11 +325,12 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
 
     const Pattern& pat = mCommitted[mActiveCommitted.load()]; // SPSC: read active slot
 
-    // --- Host MIDI-clock slave (Phase 3) ---
-    // Scan host MIDI for clock/start/stop. 24 ppq -> 6 ticks per 16th note.
-    // When the host is sending clock we slave to it (ignore internal tempo).
-    bool hostClockSeen = false, clockStart = false, clockStop = false;
+    const int syncIdx = (int) syncParam->load(); // 0=Off, 1=MIDI Clock, 2=DAW
+
+    // --- Host MIDI-clock slave (Phase 3) — only when Sync == "MIDI Clock" ---
+    bool clockStart = false, clockStop = false;
     mClockTickCount = 0;
+    if (syncIdx == 1)
     {
         juce::MidiBuffer::Iterator hit (midiMessages);
         juce::MidiMessage hm; int hpos;
@@ -331,11 +339,17 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
             if (hm.isMidiClock())
             {
                 if (mClockTickCount < 64) mClockTicks[mClockTickCount++] = hpos;
-                hostClockSeen = true;
             }
-            else if (hm.isMidiStart() || hm.isMidiContinue()) { clockStart = true; hostClockSeen = true; }
-            else if (hm.isMidiStop())  { clockStop = true; hostClockSeen = true; }
+            else if (hm.isMidiStart() || hm.isMidiContinue()) { clockStart = true; }
+            else if (hm.isMidiStop())  { clockStop = true; }
         }
+    }
+    else
+    {
+        // Not in MIDI Clock mode: drop any stale slave state so a previous run
+        // doesn't keep us slaved after the user moves the Sync dropdown.
+        mClockRunning = false;
+        mHostSlaved  = false;
     }
 
     if (clockStart)
@@ -351,6 +365,49 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
     if (clockStop)
     {
         mClockRunning = false;
+        mSeqMidi.addEvent (juce::MidiMessage::allNotesOff (1), 0);
+        mSeqCurrentStepPlaying = -1; mSeqCurrentNote = -1;
+    }
+
+    // --- DAW sync (AudioPlayHead): phase-lock steps to the host transport ---
+    mDawSync = (syncIdx == 2); // choice index 2 == "DAW"
+    bool dawStart = false, dawStop = false;
+    if (mDawSync)
+    {
+        if (auto* ph = getPlayHead())
+        {
+            juce::AudioPlayHead::CurrentPositionInfo pos;
+            if (ph->getCurrentPosition (pos))
+            {
+                mHostBpm = pos.bpm > 1.0 ? pos.bpm : 120.0;
+                bool playing = pos.isPlaying;
+                if (playing && !mDawPlaying) dawStart = true;
+                if (!playing && mDawPlaying) dawStop  = true;
+                mDawPlaying = playing;
+                // 16.16 fixed-point PPQ at the start of this block, RELATIVE to
+                // the host bar start so step 0 always lands on the downbeat even
+                // when playback starts/loops mid-bar (reviewer req-1 robustness).
+                double ppq = pos.ppqPosition - pos.ppqPositionOfLastBarStart;
+                mHostPos = (int64) (ppq * 65536.0);
+            }
+        }
+    }
+    else
+    {
+        mDawPlaying = false;
+        mDawSlaved  = false;   // disengage sticky slave when Sync != DAW
+    }
+
+    if (dawStart)
+    {
+        if (mSeqCurrentNote >= 0)
+            mSeqMidi.addEvent (juce::MidiMessage::noteOff (1, mSeqCurrentNote, 0.0f), 0);
+        mSeqStepIndex = 0; mSeqSamplePos = 0;
+        mDawSlaved = true;
+        mSeqCurrentStepPlaying = -1; mSeqCurrentNote = -1;
+    }
+    if (dawStop)
+    {
         mSeqMidi.addEvent (juce::MidiMessage::allNotesOff (1), 0);
         mSeqCurrentStepPlaying = -1; mSeqCurrentNote = -1;
     }
@@ -375,7 +432,37 @@ void TB303Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
                 }
             }
         }
-        else if (!mHostSlaved)
+        else if (mDawSync && mDawPlaying)
+        {
+            // DAW sync: phase-lock the 16 steps to the host PPQ grid. Each 16th
+            // note = 0.25 PPQ. We detect, per sample, when the host crosses into a
+            // new 16th-note slot and emit that step at the crossing sample. This
+            // locks step 0 to the host bar start (no drift, follows tempo changes).
+            const double ppqPerSample = (mHostBpm / 60.0) / mSampleRate; // PPQ per sample
+            const double sixteenth = 0.25; // PPQ per 16th note
+            double ppq = (double) mHostPos / 65536.0;
+            int lastStepIdx = -1; // force the current step to emit on sample 0
+            int remaining = numSamples;
+            int blockPos = 0;
+            while (remaining > 0)
+            {
+                double newPpq = ppq + ppqPerSample;
+                int newStepIdx = (int) (newPpq / sixteenth);
+                if (newStepIdx != lastStepIdx)
+                {
+                    // Crossed into a new 16th slot; emit that step.
+                    int step = newStepIdx % pat.length;
+                    if (mSeqCurrentStepPlaying != step)
+                        emitStep (newStepIdx, blockPos, pat, mSeqMidi);
+                    lastStepIdx = newStepIdx;
+                }
+                ppq = newPpq;
+                ++blockPos;
+                --remaining;
+            }
+            mHostPos = (int64) (ppq * 65536.0);
+        }
+        else if (!mHostSlaved && !mDawSlaved)
         {
             // Internal timer (Phase 1) with swing (Phase 3). Swing lengthens the
             // odd 16th and shortens the even one so the pair still spans 2 steps

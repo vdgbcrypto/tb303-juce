@@ -170,7 +170,26 @@ buffer mClockTicks[64] (NOT a local std::vector) so the clock path allocates
 nothing on the audio thread. emitStep() is the single shared note-trigger so
 both paths stay consistent (L11 slide/release behaviour).
 
----
+### L15 — DAW sync (AudioPlayHead) must be a 3rd mutually-exclusive mode + phase-lock
+Error: adding host transport sync as a separate code path that can run ALONGSIDE
+the internal timer or MIDI-clock slave double-triggers steps. Also, crossing a
+16th-note boundary via `ceil(ppq/0.25)*0.25` is skipped when ppq sits EXACTLY on
+a boundary (ceil==ppq, so `> ppq` test fails) -> missed step. And the very first
+step (step 0 at ppq 0) is dropped if you only emit on boundary crossing. The
+MIDI-clock scan was NOT gated by the Sync dropdown, so Sync=Off/DAW still got
+slaved to 0xF8, and mDawSlaved/mHostSlaved were sticky (never cleared) -> unit
+stuck silent after leaving DAW/MIDI mode.
+Prevention: one `syncIdx = syncParam->load()` (0=Off,1=MIDI Clock,2=DAW). MIDI-
+clock scan runs ONLY when syncIdx==1 (else clear mClockRunning/mHostSlaved). DAW
+block runs only when syncIdx==2 (else clear mDawPlaying/mDawSlaved). Arbitration:
+`if (mClockRunning){ MIDI } else if (mDawSync && mDawPlaying){ DAW } else if
+(!mHostSlaved && !mDawSlaved){ internal }`. DAW reads AudioPlayHead::getCurrentPosition
+(null-checked); mHostPos = 16.16 of (ppqPosition - ppqPositionOfLastBarStart) so
+step 0 locks to the host DOWNBEAT even on mid-bar start/loop. Per-sample step
+change: `int newStepIdx=(int)(newPpq/0.25); if(newStepIdx!=lastStepIdx) emitStep(...)`
+with `lastStepIdx=-1` so step 0 emits on sample 0. dawStart releases held note;
+dawStop allNotesOff. Verified: 880 steps/110s @120bpm = exact 8/sec, no drift.
+
 ---
 
 ## Standing environment facts (persist across sessions)
